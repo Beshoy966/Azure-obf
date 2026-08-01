@@ -970,8 +970,11 @@ if ((1/1)==0) then for _i=1,0 do end end
     task.spawn(function()
         local startTime = tick()
         RunService.RenderStepped:Connect(function()
-            local hue = ((tick() - startTime) * 0.15) % 1
-            pcall(function() ClientName.TextColor3 = Color3.fromHSV(hue, 0.85, 1) end)
+            local elapsed = tick() - startTime
+            local hue = (elapsed * 0.15) % 1
+            pcall(function()
+                ClientName.TextColor3 = Color3.fromHSV(hue, 0.85, 1)
+            end)
         end)
     end)
 
@@ -10915,6 +10918,7 @@ local unlock_all_module = UnlockTab:create_module({
     end
 })
 
+
 local guilib_module = GuiTab:create_module({
     title = "GUI Visible",
     description = "Visibility of GUI Library",
@@ -11335,7 +11339,7 @@ if (#"">2) then local _n=math.floor(3.14) end
         sound_service.Volume = 0.03
     end
 
-    fps_boost_loop = RunService.PreSimulation:Connect(function()
+    fps_boost_loop = RunService.Heartbeat:Connect(function()
         if (math.floor(1.5)==1) and (not fps_boost_enabled) then
             return
         end
@@ -12055,7 +12059,7 @@ if ((1/1)==0) then for _i=1,0 do end end
     end
 end
 
-RunService.PreSimulation:Connect(function()
+RunService.Heartbeat:Connect(function()
     rainbowHue = (rainbowHue + 1) % (379-19)
     local ball = get_real_ball()
     if ball then
@@ -13309,7 +13313,7 @@ ReplicatedStorage.Remotes.Phantom.OnClientEvent:Connect(function(a, b)
 end)
 
 task.spawn(function()
-    RunService.PreSimulation:Connect(function()
+    RunService.Heartbeat:Connect(function()
         if not System.__properties.__phantom_active then return end
         if not getgenv().AntiPhantomAttack then return end
         if not LocalPlayer.Character then return end
@@ -13852,7 +13856,7 @@ if (#"">2) then local _n=math.floor(3.14) end
                 System.__properties.__parried = true
             end
         end
-        if training_ball then
+        if training_ball and not getgenv().LobbyAPEnabled then
             local zoomies = training_ball:FindFirstChild("zoomies")
             if zoomies then
                 training_ball:GetAttributeChangedSignal("target"):Once(function()
@@ -14726,9 +14730,8 @@ autoparry_module:create_checkbox({
     end
 })
 
-getgenv()._ZX_LobbyAP_LastParry = 0
 getgenv()._ZX_LobbyAP_ParryCooldown = false
-getgenv()._ZX_LobbyAP_Accuracy = 0.7 + (100 - 1) * 0.0035353535353535
+getgenv()._ZX_LobbyAP_SpeedDivisorMultiplier = 1.1
 
 local lobby_ap_module = AutoparryTab:create_module({
     title = "Lobby AP",
@@ -14771,29 +14774,26 @@ local lobby_ap_module = AutoparryTab:create_module({
                     if not ball then return end
                     local zoomies = ball:FindFirstChild("zoomies")
                     if not zoomies then return end
-                    ball.AttributeChanged:Once(function()
+                    ball:GetAttributeChangedSignal("target"):Once(function()
                         getgenv()._ZX_LobbyAP_ParryCooldown = false
                     end)
-                    if not getgenv()._ZX_LobbyAP_ParryCooldown then
-                        local speed = zoomies.VectorVelocity.Magnitude
-                        if speed > 0 then
-                            local ball_target = ball:GetAttribute("target")
-                            if ball_target == LocalPlayer.Name then
-                                local distance = (LocalPlayer.Character.PrimaryPart.Position - ball.Position).Magnitude
-                                local ping = getgenv()._ZX_PingCache or 50
-                                local reach_time = 0.15 + ping / 1000
-                                local time_to_hit = distance / speed
-                                local accuracy_multiplier = getgenv().LobbyAPAccuracyValue or getgenv()._ZX_LobbyAP_Accuracy
-                                if getgenv().LobbyAPRandomAccuracy then
-                                    accuracy_multiplier = 0.7 + (math.random(1, 100) - 1) * 0.0035353535353535
-                                end
-                                local parry_threshold = reach_time * accuracy_multiplier
-                                if time_to_hit <= parry_threshold then
-                                    getgenv()._ZX_LobbyAP_ParryCooldown = true
-                                    System.parry.execute()
-                                end
-                            end
-                        end
+                    if getgenv()._ZX_LobbyAP_ParryCooldown then return end
+                    local ball_target = ball:GetAttribute("target")
+                    if not ball_target then return end
+                    if ball_target ~= LocalPlayer.Name then return end
+                    local speed = zoomies.VectorVelocity.Magnitude
+                    if speed == 0 then return end
+                    local distance = (LocalPlayer.Character.PrimaryPart.Position - ball.Position).Magnitude
+                    local speed_divisor_base = 2.4 + math.min(math.max(speed - 9.5, 0), 650) * 0.002
+                    local speed_multiplier = getgenv()._ZX_LobbyAP_SpeedDivisorMultiplier
+                    if getgenv().LobbyAPRandomAccuracy then
+                        speed_multiplier = 0.7 + (math.random(1, 100) - 1) * (0.35 / 99)
+                    end
+                    local speed_divisor = speed_divisor_base * speed_multiplier
+                    local parry_accuracy = 5 + math.max(speed / speed_divisor, 9.5)
+                    if distance <= parry_accuracy then
+                        getgenv()._ZX_LobbyAP_ParryCooldown = true
+                        System.parry.execute()
                     end
                 end)
             end
@@ -14818,8 +14818,7 @@ lobby_ap_module:create_slider({
     value = 100,
     round_number = true,
     callback = function(value)
-        getgenv().LobbyAPAccuracyValue = 0.7 + (value - 1) * 0.0035353535353535
-        getgenv()._ZX_LobbyAP_Accuracy = getgenv().LobbyAPAccuracyValue
+        getgenv()._ZX_LobbyAP_SpeedDivisorMultiplier = 0.7 + (value - 1) * (0.35 / 99)
     end
 })
 
@@ -14842,7 +14841,6 @@ lobby_ap_module:create_checkbox({
 getgenv().LobbyAPEnabled = false
 getgenv().LobbyAPNotify = false
 getgenv().LobbyAPRandomAccuracy = false
-getgenv().LobbyAPAccuracyValue = 0.7 + (100 - 1) * 0.0035353535353535
 
 local function create_mobile_button(name, position_y, color)
     local gui = Instance.new('ScreenGui')
@@ -15099,7 +15097,7 @@ local staff_detection_module = DetectionTab:create_module({
             end
 
             checkModPlayers()
-            modMonitorConnection = RunService.PreSimulation:Connect(checkModPlayers)
+            modMonitorConnection = RunService.Heartbeat:Connect(checkModPlayers)
         else
             if modMonitorConnection then
                 modMonitorConnection:Disconnect()
@@ -16372,6 +16370,7 @@ if (#"">2) then local _q={} _q[1]=2 end
         end
     })
 
+
 local function getPlayerNames()
     local names = {}
     for _, pl in ipairs(Players:GetPlayers()) do
@@ -16564,7 +16563,7 @@ end
 local lastOptionsString = table.concat(initialOptions, ',')
 local updateTimer = 0
 
-RunService.PreSimulation:Connect(function(dt)
+RunService.Heartbeat:Connect(function(dt)
     updateTimer = updateTimer + dt
     if updateTimer >= (29-19) then
         local newOptions = getPlayerNames()
@@ -17326,7 +17325,7 @@ local function start_thunder_dash_exploit()
         return
     end
 
-    thunder_dash_exploit_connection = RunService.PreSimulation:Connect(function()
+    thunder_dash_exploit_connection = RunService.Heartbeat:Connect(function()
         if getgenv().AbilityExploit and getgenv().ThunderDashNoCooldown then
             apply_thunder_dash_exploit()
         end
@@ -17404,6 +17403,88 @@ local no_render_module = MiscTab:create_module({
             if Connections_Manager["No Render"] then
                 Connections_Manager["No Render"]:Disconnect()
                 Connections_Manager["No Render"] = nil
+            end
+        end
+    end
+})
+
+local hide_server_render_module = MiscTab:create_module({
+    title = "Hide Server Rendering",
+    flag = "HideServerRender",
+    description = "Destroys all server-side effects in Runtime",
+    section = "left",
+    callback = function(state: boolean)
+        getgenv().HideServerRendering = state
+        if state then
+            if not Connections_Manager["HideServerRender"] then
+                local runtime = workspace:FindFirstChild('Runtime')
+                if runtime then
+                    for _, child in ipairs(runtime:GetChildren()) do
+                        pcall(function() Debris:AddItem(child, 0) end)
+                    end
+                    Connections_Manager["HideServerRender"] = runtime.ChildAdded:Connect(function(child)
+                        pcall(function() Debris:AddItem(child, 0) end)
+                    end)
+                end
+            end
+        else
+            if Connections_Manager["HideServerRender"] then
+                Connections_Manager["HideServerRender"]:Disconnect()
+                Connections_Manager["HideServerRender"] = nil
+            end
+        end
+    end
+})
+
+local hit_effect_module = VisualsTab:create_module({
+    title = "Hit Effect",
+    flag = "HitEffect",
+    description = "Shows a visual effect when ball is parried",
+    section = "right",
+    callback = function(state: boolean)
+        getgenv().HitEffectEnabled = state
+        if state then
+            if not Connections_Manager["HitEffect"] then
+                Connections_Manager["HitEffect"] = RunService.RenderStepped:Connect(function()
+                    local ball = System.ball.get()
+                    if not ball then return end
+                    local zoomies = ball:FindFirstChild("zoomies")
+                    if not zoomies then return end
+                    local ball_target = ball:GetAttribute("target")
+                    if not ball_target then return end
+                    if ball_target ~= LocalPlayer.Name then return end
+                    local char = LocalPlayer.Character
+                    if not char or not char.PrimaryPart then return end
+                    local distance = (char.PrimaryPart.Position - ball.Position).Magnitude
+                    if distance < 20 and not getgenv()._ZX_HitEffectFired then
+                        getgenv()._ZX_HitEffectFired = true
+                        pcall(function()
+                            local attachment = Instance.new("Attachment")
+                            attachment.Parent = ball
+                            local particle = Instance.new("ParticleEmitter")
+                            particle.Texture = "rbxassetid://243660364"
+                            particle.Rate = 999
+                            particle.Lifetime = NumberRange.new(0.3, 0.5)
+                            particle.Speed = NumberRange.new(20, 40)
+                            particle.SpreadAngle = Vector2.new(360, 360)
+                            particle.Color = ColorSequence.new(Color3.fromRGB(255, 255, 0))
+                            particle.Size = NumberSequence.new({
+                                NumberSequenceKeypoint.new(0, 2),
+                                NumberSequenceKeypoint.new(1, 0)
+                            })
+                            particle.Parent = attachment
+                            Debris:AddItem(attachment, 1)
+                        end)
+                        task.delay(0.5, function()
+                            getgenv()._ZX_HitEffectFired = false
+                        end)
+                    end
+                end)
+            end
+        else
+            if Connections_Manager["HitEffect"] then
+                Connections_Manager["HitEffect"]:Disconnect()
+                Connections_Manager["HitEffect"] = nil
             end
         end
     end
@@ -17583,7 +17664,7 @@ getgenv()._ZX_SetupLookAtBall = function()
         flag = "ZX_SmoothLook",
         callback = function(state) getgenv()._ZX_SmoothLook = state end,
     })
-    RunService.PreSimulation:Connect(function(dt)
+    RunService.Heartbeat:Connect(function(dt)
         if not getgenv()._ZX_LookAtBall then return end
         local char = LocalPlayer.Character
         if not char then return end
@@ -17646,7 +17727,7 @@ getgenv()._ZX_SetupOrbitBall = function()
         minimum_value = 1, maximum_value = 12, value = 4, round_number = true,
         callback = function(value) getgenv()._ZX_OrbitSpeed = value end,
     })
-    RunService.PreSimulation:Connect(function(dt)
+    RunService.Heartbeat:Connect(function(dt)
         if not getgenv()._ZX_OrbitBall then return end
         local char = LocalPlayer.Character
         if not char then return end
@@ -17894,16 +17975,58 @@ getgenv()._ZX_SetupWorldTab = function()
 end
 getgenv()._ZX_SetupWorldTab()
 
-
 do
 getgenv().skinChanger = false
 getgenv().swordModel = ""
+getgenv().swordAnimations = ""
+getgenv().swordFX = ""
+
+local skin_changer_module = UnlockTab:create_module({
+    title = "Skin Changer",
+    description = "Changes your sword skin",
+    flag = "SkinChangerModule",
+    section = "right",
+    callback = function(state)
+        getgenv().skinChanger = state
+        if state and getgenv().swordModel ~= "" then
+            if getgenv()._ZX_SetSword then getgenv()._ZX_SetSword() end
+        end
+    end
+})
+
+skin_changer_module:create_textbox({
+    title = "Sword Model Name",
+    placeholder = "Enter sword name...",
+    flag = "SkinChangerModel",
+    callback = function(value)
+        getgenv().swordModel = value or ""
+        getgenv().swordAnimations = value or ""
+        getgenv().swordFX = value or ""
+        if getgenv().skinChanger and value and value ~= "" then
+            if getgenv()._ZX_SetSword then getgenv()._ZX_SetSword() end
+        end
+    end
+})
 
 task.spawn(function()
     local rs = game:GetService("ReplicatedStorage")
-    local swordInstancesMod = rs:WaitForChild("Shared", 9e9):WaitForChild("ReplicatedInstances", 9e9):WaitForChild("Swords", 9e9)
-    local swordInstances = require(swordInstancesMod)
+    local swordInstances = nil
     local swordsController = nil
+
+    pcall(function()
+        local swordInstancesMod = rs:WaitForChild("Shared", 10)
+        if swordInstancesMod then
+            swordInstancesMod = swordInstancesMod:WaitForChild("ReplicatedInstances", 10)
+            if swordInstancesMod then
+                swordInstancesMod = swordInstancesMod:WaitForChild("Swords", 10)
+                if swordInstancesMod then
+                    swordInstances = require(swordInstancesMod)
+                end
+            end
+        end
+    end)
+
+    if not swordInstances then return end
 
     pcall(function()
         local ok, conns = pcall(getconnections, rs.Remotes.ParrySuccessAll.OnClientEvent)
@@ -17946,18 +18069,19 @@ task.spawn(function()
             if not swordsController then return end
             pcall(function()
                 if swordsController.SetSword then
-                    swordsController:SetSword(getgenv().swordModel)
+                    swordsController:SetSword(getgenv().swordAnimations ~= "" and getgenv().swordAnimations or getgenv().swordModel)
                 end
             end)
             pcall(function()
+                local targetSword = getgenv().swordFX ~= "" and getgenv().swordFX or getgenv().swordModel
                 if rs.Remotes:FindFirstChild("FireSwordInfo") then
-                    rs.Remotes.FireSwordInfo:FireServer(getgenv().swordModel)
+                    rs.Remotes.FireSwordInfo:FireServer(targetSword)
                 end
                 if swordsController.currentSword ~= nil then
-                    pcall(function() swordsController.currentSword = getgenv().swordModel end)
+                    pcall(function() swordsController.currentSword = targetSword end)
                 end
                 if swordsController.SwordFX ~= nil then
-                    pcall(function() swordsController.SwordFX = getgenv().swordModel end)
+                    pcall(function() swordsController.SwordFX = targetSword end)
                 end
             end)
         end)
@@ -17971,36 +18095,14 @@ task.spawn(function()
             setSword()
         end
     end)
-
-    local skinMod = UnlockTab:create_module({
-        title = "Skin Changer",
-        description = "Changes your sword skin",
-        flag = "SkinChangerModule",
-        section = "right",
-        callback = function(state)
-            getgenv().skinChanger = state
-            if state and getgenv().swordModel ~= "" then
-                setSword()
-            end
-        end
-    })
-
-    skinMod:create_textbox({
-        title = "Sword Name",
-        placeholder = "Enter sword name...",
-        flag = "SkinChangerModel",
-        callback = function(value)
-            getgenv().swordModel = value or ""
-            if getgenv().skinChanger and value and value ~= "" then
-                setSword()
-            end
-        end
-    })
 end)
 end
 
 do
-local ball_esp_mod = EspTab:create_module({
+getgenv().BallESPEnabled = false
+getgenv().BallTracerEnabled = false
+
+getgenv()._ZX_BallESP = EspTab:create_module({
     title = "Ball ESP",
     description = "Show ball target and speed",
     flag = "BallESPModule",
@@ -18018,30 +18120,42 @@ local ball_esp_mod = EspTab:create_module({
                     local speed = zoomies.VectorVelocity.Magnitude
                     local pos, onScreen = workspace.CurrentCamera:WorldToViewportPoint(ball.Position)
                     if onScreen then
+                        local text = target .. " | " .. math.floor(speed) .. " speed"
                         if not getgenv()._ZX_BallESPLabel then
-                            local d = Drawing.new("Text")
-                            d.Size = 16; d.Center = true; d.Outline = true
-                            d.Color = Color3.fromRGB(255, 255, 0); d.Font = 2
-                            getgenv()._ZX_BallESPLabel = d
+                            local drawing = Drawing.new("Text")
+                            drawing.Size = 16
+                            drawing.Center = true
+                            drawing.Outline = true
+                            drawing.Color = Color3.fromRGB(255, 255, 0)
+                            drawing.Font = 2
+                            getgenv()._ZX_BallESPLabel = drawing
                         end
-                        getgenv()._ZX_BallESPLabel.Text = target .. " | " .. math.floor(speed) .. " speed"
+                        getgenv()._ZX_BallESPLabel.Text = text
                         getgenv()._ZX_BallESPLabel.Position = Vector2.new(pos.X, pos.Y - 30)
                         getgenv()._ZX_BallESPLabel.Visible = true
                     else
-                        if getgenv()._ZX_BallESPLabel then getgenv()._ZX_BallESPLabel.Visible = false end
+                        if getgenv()._ZX_BallESPLabel then
+                            getgenv()._ZX_BallESPLabel.Visible = false
+                        end
                     end
                 end)
             end
         else
-            if Connections_Manager["BallESP"] then Connections_Manager["BallESP"]:Disconnect(); Connections_Manager["BallESP"] = nil end
-            if getgenv()._ZX_BallESPLabel then getgenv()._ZX_BallESPLabel:Remove(); getgenv()._ZX_BallESPLabel = nil end
+            if Connections_Manager["BallESP"] then
+                Connections_Manager["BallESP"]:Disconnect()
+                Connections_Manager["BallESP"] = nil
+            end
+            if getgenv()._ZX_BallESPLabel then
+                getgenv()._ZX_BallESPLabel:Remove()
+                getgenv()._ZX_BallESPLabel = nil
+            end
         end
     end
 })
 
-local ball_tracer_mod = EspTab:create_module({
+getgenv()._ZX_BallTracer = EspTab:create_module({
     title = "Ball Tracer",
-    description = "Show line from you to ball",
+    description = "Show trajectory line from you to the ball",
     flag = "BallTracerModule",
     section = "right",
     callback = function(state)
@@ -18054,44 +18168,59 @@ local ball_tracer_mod = EspTab:create_module({
                     local char = LocalPlayer.Character
                     if not char or not char.PrimaryPart then return end
                     local cam = workspace.CurrentCamera
-                    local ballPos, ballOn = cam:WorldToViewportPoint(ball.Position)
-                    local playerPos, playerOn = cam:WorldToViewportPoint(char.PrimaryPart.Position)
-                    if ballOn and playerOn then
+                    local ballPos, ballOnScreen = cam:WorldToViewportPoint(ball.Position)
+                    local playerPos, playerOnScreen = cam:WorldToViewportPoint(char.PrimaryPart.Position)
+                    if ballOnScreen and playerOnScreen then
                         if not getgenv()._ZX_BallTracerLine then
-                            local l = Drawing.new("Line")
-                            l.Thickness = 2; l.Transparency = 1
-                            l.Color = Color3.fromRGB(0, 255, 100)
-                            getgenv()._ZX_BallTracerLine = l
+                            local line = Drawing.new("Line")
+                            line.Thickness = 2
+                            line.Transparency = 1
+                            line.Color = Color3.fromRGB(0, 255, 100)
+                            getgenv()._ZX_BallTracerLine = line
                         end
                         getgenv()._ZX_BallTracerLine.From = Vector2.new(playerPos.X, playerPos.Y)
                         getgenv()._ZX_BallTracerLine.To = Vector2.new(ballPos.X, ballPos.Y)
                         getgenv()._ZX_BallTracerLine.Visible = true
                     else
-                        if getgenv()._ZX_BallTracerLine then getgenv()._ZX_BallTracerLine.Visible = false end
+                        if getgenv()._ZX_BallTracerLine then
+                            getgenv()._ZX_BallTracerLine.Visible = false
+                        end
                     end
                 end)
             end
         else
-            if Connections_Manager["BallTracer"] then Connections_Manager["BallTracer"]:Disconnect(); Connections_Manager["BallTracer"] = nil end
-            if getgenv()._ZX_BallTracerLine then getgenv()._ZX_BallTracerLine:Remove(); getgenv()._ZX_BallTracerLine = nil end
+            if Connections_Manager["BallTracer"] then
+                Connections_Manager["BallTracer"]:Disconnect()
+                Connections_Manager["BallTracer"] = nil
+            end
+            if getgenv()._ZX_BallTracerLine then
+                getgenv()._ZX_BallTracerLine:Remove()
+                getgenv()._ZX_BallTracerLine = nil
+            end
         end
     end
 })
 end
 
 do
-getgenv()._ZX_FXColors = {"Blue", "Red", "Green", "Yellow", "Purple", "Cyan", "White", "Orange", "Pink"}
-getgenv()._ZX_FXColorMap = {
-    Blue = Color3.fromRGB(0, 100, 255), Red = Color3.fromRGB(255, 50, 50),
-    Green = Color3.fromRGB(50, 255, 50), Yellow = Color3.fromRGB(255, 255, 0),
-    Purple = Color3.fromRGB(150, 0, 255), Cyan = Color3.fromRGB(0, 255, 255),
-    White = Color3.fromRGB(255, 255, 255), Orange = Color3.fromRGB(255, 165, 0),
+getgenv().ShieldChangerEnabled = false
+getgenv().SlashChangerEnabled = false
+getgenv()._ZX_ShieldColors = {"Blue", "Red", "Green", "Yellow", "Purple", "Cyan", "White", "Orange", "Pink"}
+getgenv()._ZX_ColorMap = {
+    Blue = Color3.fromRGB(0, 100, 255),
+    Red = Color3.fromRGB(255, 50, 50),
+    Green = Color3.fromRGB(50, 255, 50),
+    Yellow = Color3.fromRGB(255, 255, 0),
+    Purple = Color3.fromRGB(150, 0, 255),
+    Cyan = Color3.fromRGB(0, 255, 255),
+    White = Color3.fromRGB(255, 255, 255),
+    Orange = Color3.fromRGB(255, 165, 0),
     Pink = Color3.fromRGB(255, 100, 200)
 }
 
-local shieldMod = EspTab:create_module({
+getgenv()._ZX_ShieldChanger = EspTab:create_module({
     title = "Shield Changer",
-    description = "Changes parry shield FX color",
+    description = "Changes your parry shield FX color",
     flag = "ShieldChangerModule",
     section = "left",
     callback = function(state)
@@ -18099,20 +18228,22 @@ local shieldMod = EspTab:create_module({
     end
 })
 
-shieldMod:create_dropdown({
+getgenv()._ZX_ShieldChanger:create_dropdown({
     title = "Shield Color",
     flag = "ShieldColor",
-    options = getgenv()._ZX_FXColors,
+    options = getgenv()._ZX_ShieldColors,
     maximum_options = 9,
     multi_dropdown = false,
+    default = 1,
     callback = function(value)
-        getgenv().ShieldColor = getgenv()._ZX_FXColorMap[value] or Color3.fromRGB(0, 100, 255)
+        local color = getgenv()._ZX_ColorMap[value] or Color3.fromRGB(0, 100, 255)
+        getgenv().ShieldColor = color
     end
 })
 
-local slashMod = EspTab:create_module({
+getgenv()._ZX_SlashChanger = EspTab:create_module({
     title = "Slash Changer",
-    description = "Changes sword hit FX color",
+    description = "Changes your sword hit FX color",
     flag = "SlashChangerModule",
     section = "left",
     callback = function(state)
@@ -18120,14 +18251,16 @@ local slashMod = EspTab:create_module({
     end
 })
 
-slashMod:create_dropdown({
+getgenv()._ZX_SlashChanger:create_dropdown({
     title = "Slash Color",
     flag = "SlashColor",
-    options = getgenv()._ZX_FXColors,
+    options = getgenv()._ZX_ShieldColors,
     maximum_options = 9,
     multi_dropdown = false,
+    default = 1,
     callback = function(value)
-        getgenv().SlashColor = getgenv()._ZX_FXColorMap[value] or Color3.fromRGB(0, 100, 255)
+        local color = getgenv()._ZX_ColorMap[value] or Color3.fromRGB(0, 100, 255)
+        getgenv().SlashColor = color
     end
 })
 
@@ -18169,7 +18302,7 @@ pcall(function()
     end
 end)
 
-local pullMod = DetectionTab:create_module({
+getgenv()._ZX_PullDetection = DetectionTab:create_module({
     title = "Pull Detection",
     description = "Skips parry during Pull",
     flag = "PullDetection",
@@ -18182,4 +18315,6 @@ local pullMod = DetectionTab:create_module({
     end
 })
 end
+
+
 return Library
