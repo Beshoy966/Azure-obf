@@ -13160,6 +13160,11 @@ function System.detection.is_curved()
         else ball_distance_threshold = math.max(ball_distance_threshold - 20, 20) end
     end
     if distance < ball_distance_threshold then return false end
+
+    if speed < 120 and distance < 22 and dot > 0.2 then
+        return false
+    end
+
     local adjusted_reach_time = reach_time + 0.03
     if speed < 300 then
         if (tick() - cs.Curving) < (adjusted_reach_time / 1.2) then return true end
@@ -13887,12 +13892,61 @@ if (#"">2) then local _n=math.floor(3.14) end
             end
         end
     end)
+    if System.__properties.__connections.__autoparry_hb then
+        System.__properties.__connections.__autoparry_hb:Disconnect()
+    end
+    System.__properties.__connections.__autoparry_hb = RunService.Heartbeat:Connect(function()
+        if not System.__properties.__autoparry_enabled or not LocalPlayer.Character or
+           not LocalPlayer.Character.PrimaryPart then
+            return
+        end
+        local balls = System.ball.get_all()
+        local one_ball = System.ball.get()
+        for _, ball in pairs(balls) do
+            if System.__triggerbot.__enabled then return end
+            if getgenv().BallVelocityAbove800 then return end
+            if not ball then continue end
+            local zoomies = ball:FindFirstChild("zoomies")
+            if not zoomies then continue end
+            if System.__properties.__parried then continue end
+            local ball_target = ball:GetAttribute("target")
+            local velocity = zoomies.VectorVelocity
+            local distance = (LocalPlayer.Character.PrimaryPart.Position - ball.Position).Magnitude
+            local ping = getgenv()._ZX_PingCache / 10
+            local ping_threshold = math.clamp(ping / 10, 5, 17)
+            local speed = velocity.Magnitude
+            local capped_speed_diff = math.min(math.max(speed - 9.5, 0), 650)
+            local speed_divisor = (2.4 + capped_speed_diff * 0.002) * System.__properties.__divisor_multiplier
+            local parry_accuracy = ping_threshold + math.max(speed / speed_divisor, 9.5)
+            if ball:FindFirstChild("ComboCounter") then continue end
+            if LocalPlayer.Character.PrimaryPart:FindFirstChild("SingularityCape") then continue end
+            if System.__config.__detections.__infinity and System.__properties.__infinity_active then continue end
+            if System.__config.__detections.__deathslash and System.__properties.__deathslash_active then continue end
+            if System.__config.__detections.__timehole and System.__properties.__timehole_active then continue end
+            if System.__config.__detections.__slashesoffury and System.__properties.__slashesoffury_active then continue end
+            if ball_target == LocalPlayer.Name and distance <= parry_accuracy and not System.__properties.__parried then
+                if getgenv().AutoParryMode == "Keypress" then
+                    System.parry.keypress()
+                else
+                    System.parry.execute_action()
+                end
+                if getgenv().AutoParryAnimationFix and PF then
+                    PF()
+                end
+                System.__properties.__parried = true
+            end
+        end
+    end)
 end
 
 function System.autoparry.stop()
-    if (1<2) and (System.__properties.__connections.__autoparry) then
+    if System.__properties.__connections.__autoparry then
         System.__properties.__connections.__autoparry:Disconnect()
         System.__properties.__connections.__autoparry = nil
+    end
+    if System.__properties.__connections.__autoparry_hb then
+        System.__properties.__connections.__autoparry_hb:Disconnect()
+        System.__properties.__connections.__autoparry_hb = nil
     end
 end
 
