@@ -13161,33 +13161,18 @@ function System.detection.is_curved()
     end
     if distance < ball_distance_threshold then return false end
     local adjusted_reach_time = reach_time + 0.03
-    if speed < 300 then
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.2) then return true end
-    elseif speed < 450 then
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.21) then return true end
-    elseif speed < 600 then
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.335) then return true end
-    elseif speed < 1500 then
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
-    else
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
-    end
-    local dot_threshold = (0 - ping / 1000)
+    if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
+    local dot_threshold = (0.5 - ping / 1000)
     local direction_difference = (ball_direction - velocity.Unit)
     local direction_similarity = 0
     if direction_difference.Magnitude > 0 then direction_similarity = direction:Dot(direction_difference.Unit) end
     local dot_difference = dot - direction_similarity
     if dot_difference < dot_threshold then return true end
     local clamped_dot = math.clamp(dot, -1, 1)
-    local radians = math.deg(math.asin(clamped_dot))
+    local radians = math.rad(math.asin(clamped_dot))
     cs.Lerp_Radians = cs.Lerp_Radians + (radians - cs.Lerp_Radians) * 0.8
-    if speed < 300 then
-        if cs.Lerp_Radians < 0.02 and dot < 0 then cs.Last_Warping = tick() end
-        if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.19) then return true end
-    else
-        if cs.Lerp_Radians < 0.018 and dot < 0 then cs.Last_Warping = tick() end
-        if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.5) then return true end
-    end
+    if cs.Lerp_Radians < 0.018 and dot < 0 then cs.Last_Warping = tick() end
+    if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.5) then return true end
     if #Previous_Velocity == 4 then
         for i = 1, 2 do
             local prev_dir = (ball_direction - Previous_Velocity[i].Unit)
