@@ -3660,6 +3660,7 @@ local library = Library.new()
 if ((1/1)==0) then for _i=1,0 do end end
 library:load()
 
+do
 local AutoparryTab = library:create_tab("Main")
 local BlatantTab = library:create_tab("Blatant")
 local SpamTab = library:create_tab("Spam")
@@ -3668,6 +3669,7 @@ local PlayerTab = library:create_tab("Player")
 local VisualsTab = library:create_tab("Visual")
 local MiscTab = library:create_tab("Misc")
 local WorldTab = library:create_tab("World")
+local AutoFarmTab = library:create_tab("Auto Farm")
 if (1<-1) then local _j=1+1 end
 local GuiTab = library:create_tab("GUI")
 local UnlockTab = library:create_tab("Unlock")
@@ -13161,18 +13163,33 @@ function System.detection.is_curved()
     end
     if distance < ball_distance_threshold then return false end
     local adjusted_reach_time = reach_time + 0.03
-    if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
-    local dot_threshold = (0.5 - ping / 1000)
+    if speed < 300 then
+        if (tick() - cs.Curving) < (adjusted_reach_time / 1.2) then return true end
+    elseif speed < 450 then
+        if (tick() - cs.Curving) < (adjusted_reach_time / 1.21) then return true end
+    elseif speed < 600 then
+        if (tick() - cs.Curving) < (adjusted_reach_time / 1.335) then return true end
+    elseif speed < 1500 then
+        if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
+    else
+        if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
+    end
+    local dot_threshold = (0 - ping / 1000)
     local direction_difference = (ball_direction - velocity.Unit)
     local direction_similarity = 0
     if direction_difference.Magnitude > 0 then direction_similarity = direction:Dot(direction_difference.Unit) end
     local dot_difference = dot - direction_similarity
     if dot_difference < dot_threshold then return true end
     local clamped_dot = math.clamp(dot, -1, 1)
-    local radians = math.rad(math.asin(clamped_dot))
+    local radians = math.deg(math.asin(clamped_dot))
     cs.Lerp_Radians = cs.Lerp_Radians + (radians - cs.Lerp_Radians) * 0.8
-    if cs.Lerp_Radians < 0.018 and dot < 0 then cs.Last_Warping = tick() end
-    if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.5) then return true end
+    if speed < 300 then
+        if cs.Lerp_Radians < 0.02 and dot < 0 then cs.Last_Warping = tick() end
+        if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.19) then return true end
+    else
+        if cs.Lerp_Radians < 0.018 and dot < 0 then cs.Last_Warping = tick() end
+        if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.5) then return true end
+    end
     if #Previous_Velocity == 4 then
         for i = 1, 2 do
             local prev_dir = (ball_direction - Previous_Velocity[i].Unit)
@@ -13655,12 +13672,12 @@ function System.auto_spam.spam_service(self)
         speed_multiplier = 10
     end
 
-    local Maximum_Spam_Distance = (self.Ping or 25) + math.min(speed / (speed_multiplier * 1.2), 80)
+    local Maximum_Spam_Distance = (self.Ping or 25) + math.min(speed / (speed_multiplier * 1.5), 64)
     if (self.Entity_Properties and self.Entity_Properties.Distance or math.huge) > Maximum_Spam_Distance then return 5 end
     if (self.Ball_Properties and self.Ball_Properties.Distance or math.huge) > Maximum_Spam_Distance then return 5 end
     if target_distance > Maximum_Spam_Distance then return 5 end
     local retreating_dot = math.clamp(-dot, 0, 1)
-    local retreat_bonus = math.clamp(retreating_dot * (speed / 40), 0, 4)
+    local retreat_bonus = math.clamp(retreating_dot * (speed / 50), 0, 3.2)
     return Maximum_Spam_Distance - retreat_bonus
 end
 
@@ -13775,7 +13792,8 @@ if (#"">2) then local _n=math.floor(3.14) end
             end
             local capped_speed_diff = math.min(math.max(speed - 9.5, 0), (2*325))
             local speed_divisor = (2.4 + capped_speed_diff * 0.002) * System.__properties.__divisor_multiplier
-            local parry_accuracy = ping_threshold + math.max(speed / speed_divisor, 9.5)
+            local parry_accuracy_base = ping_threshold + math.max(speed / speed_divisor, 9.5)
+            local parry_accuracy = parry_accuracy_base * 0.85
             local curved = System.detection.is_curved()
             if (type("")=="string") and (ball:FindFirstChild("AeroDynamicSlashVFX")) then
                 ball.AeroDynamicSlashVFX:Destroy()
@@ -14645,6 +14663,10 @@ autoparry_module:create_checkbox({
     end
 })
 
+getgenv().AutoPreClick = false
+getgenv().AutoPreClickDelay = 130
+getgenv().AutoPreClickMinSpeed = 800
+
 autoparry_module:create_checkbox({
     title = "Auto Pre-Click",
     flag = "AutoPreClick",
@@ -14696,6 +14718,30 @@ autoparry_module:create_checkbox({
             getgenv()._ZX_PreClickSpeeds = {}
             getgenv()._ZX_PreClickParried = {}
         end
+    end
+})
+
+autoparry_module:create_slider({
+    title = "Pre-Click Delay (ms)",
+    flag = "AutoPreClickDelay",
+    minimum_value = 50,
+    maximum_value = 300,
+    value = 130,
+    round_number = true,
+    callback = function(value)
+        getgenv().AutoPreClickDelay = value
+    end
+})
+
+autoparry_module:create_slider({
+    title = "Pre-Click Min Speed",
+    flag = "AutoPreClickMinSpeed",
+    minimum_value = 100,
+    maximum_value = 2000,
+    value = 800,
+    round_number = true,
+    callback = function(value)
+        getgenv().AutoPreClickMinSpeed = value
     end
 })
 
@@ -14779,6 +14825,15 @@ local lobby_ap_module = AutoparryTab:create_module({
                     if distance <= parry_accuracy then
                         getgenv()._ZX_LobbyAP_ParryCooldown = true
                         System.parry.execute()
+                        if System.__properties.__auto_spam_enabled then
+                            local closest = System.player.get_closest()
+                            if closest and closest.PrimaryPart then
+                                local td = LocalPlayer:DistanceFromCharacter(closest.PrimaryPart.Position)
+                                if td <= 30 then
+                                    System.parry.execute()
+                                end
+                            end
+                        end
                     end
                 end)
             end
@@ -17814,88 +17869,88 @@ getgenv()._ZX_SetupNameSpoof = function()
         end)
     end
     local function MonitorCharacter(char)
-        if not getgenv()._ZX_NameSpoofEnabled then return end
-        local humanoid = char:WaitForChild("Humanoid", 10)
-        if humanoid then
-            humanoid.DisplayName = TargetDisplay
-            humanoid:GetPropertyChangedSignal("DisplayName"):Connect(function()
-                if getgenv()._ZX_NameSpoofEnabled and humanoid.DisplayName ~= TargetDisplay then humanoid.DisplayName = TargetDisplay end
-            end)
-        end
-        task.wait(0.5)
-        for _, billboard in pairs(char:GetDescendants()) do
-            if billboard:IsA("BillboardGui") then MonitorBillboard(billboard) end
-        end
+    if not getgenv()._ZX_NameSpoofEnabled then return end
+    local humanoid = char:WaitForChild("Humanoid", 10)
+    if humanoid then
+        humanoid.DisplayName = TargetDisplay
+        humanoid:GetPropertyChangedSignal("DisplayName"):Connect(function()
+            if getgenv()._ZX_NameSpoofEnabled and humanoid.DisplayName ~= TargetDisplay then humanoid.DisplayName = TargetDisplay end
+        end)
     end
-    task.spawn(function()
-        while true do
-            task.wait(2)
-            if getgenv()._ZX_NameSpoofEnabled then
-                pcall(function()
-                    for _, v in ipairs(LocalPlayer.PlayerGui:GetDescendants()) do MonitorObject(v) end
-                end)
-                pcall(function()
-                    local CoreGui = game:GetService("CoreGui")
-                    for _, v in ipairs(CoreGui:GetDescendants()) do MonitorObject(v) end
-                end)
-                if LocalPlayer.Character then pcall(function() MonitorCharacter(LocalPlayer.Character) end) end
-                pcall(function()
-                    for _, obj in pairs(Workspace:GetDescendants()) do
-                        if obj:IsA("BillboardGui") then
-                            for _, textObj in pairs(obj:GetDescendants()) do
-                                if textObj:IsA("TextLabel") then
-                                    local txt = textObj.Text
-                                    if txt:find(RealName) or txt:find(RealDisplay) or txt:find(CONFIG.FakeName) or txt:find(CONFIG.FakeDisplay) then
-                                        MonitorBillboard(obj)
-                                        break
-                                    end
+    task.wait(0.5)
+    for _, billboard in pairs(char:GetDescendants()) do
+        if billboard:IsA("BillboardGui") then MonitorBillboard(billboard) end
+    end
+end
+task.spawn(function()
+    while true do
+        task.wait(2)
+        if getgenv()._ZX_NameSpoofEnabled then
+            pcall(function()
+                for _, v in ipairs(LocalPlayer.PlayerGui:GetDescendants()) do MonitorObject(v) end
+            end)
+            pcall(function()
+                local CoreGui = game:GetService("CoreGui")
+                for _, v in ipairs(CoreGui:GetDescendants()) do MonitorObject(v) end
+            end)
+            if LocalPlayer.Character then pcall(function() MonitorCharacter(LocalPlayer.Character) end) end
+            pcall(function()
+                for _, obj in pairs(Workspace:GetDescendants()) do
+                    if obj:IsA("BillboardGui") then
+                        for _, textObj in pairs(obj:GetDescendants()) do
+                            if textObj:IsA("TextLabel") then
+                                local txt = textObj.Text
+                                if txt:find(RealName) or txt:find(RealDisplay) or txt:find(CONFIG.FakeName) or txt:find(CONFIG.FakeDisplay) then
+                                    MonitorBillboard(obj)
+                                    break
                                 end
                             end
                         end
                     end
-                end)
-            end
-        end
-    end)
-    pcall(function()
-        local TextChatService = game:GetService("TextChatService")
-        if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-            TextChatService.OnIncomingMessage = function(message)
-                if not getgenv()._ZX_NameSpoofEnabled then return nil end
-                local props = Instance.new("TextChatMessageProperties")
-                if message.TextSource and message.TextSource.UserId == LocalPlayer.UserId then
-                    props.PrefixText = TargetDisplay
                 end
-                return props
-            end
+            end)
         end
-    end)
-    local nameSpoofMod = PlayerTab:create_module({
-        title = "Name Spoof",
-        description = "Spoof your display name with verified badge",
-        flag = "ZX_NameSpoof",
-        section = "left",
-        callback = function(state)
-            getgenv()._ZX_NameSpoofEnabled = state
-            if state then
-                Library.SendNotification({title = "Name Spoof", text = "Enabled — name: " .. CONFIG.FakeDisplay, duration = 4})
-            else
-                Library.SendNotification({title = "Name Spoof", text = "Disabled", duration = 3})
+    end
+end)
+pcall(function()
+    local TextChatService = game:GetService("TextChatService")
+    if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        TextChatService.OnIncomingMessage = function(message)
+            if not getgenv()._ZX_NameSpoofEnabled then return nil end
+            local props = Instance.new("TextChatMessageProperties")
+            if message.TextSource and message.TextSource.UserId == LocalPlayer.UserId then
+                props.PrefixText = TargetDisplay
             end
-        end,
-    })
-    nameSpoofMod:create_textbox({
-        title = "Spoofed Name",
-        placeholder = "Enter fake name...",
-        flag = "ZX_SpoofedNameText",
-        callback = function(value)
-            CONFIG.FakeName = value
-            CONFIG.FakeDisplay = value
-            TargetName = value
-            TargetDisplay = value .. CONFIG.Separator .. VERIFIED_BADGE
-            Library.SendNotification({title = "Name Spoof", text = "Name set to: " .. value, duration = 3})
-        end,
-    })
+            return props
+        end
+    end
+end)
+local nameSpoofMod = PlayerTab:create_module({
+    title = "Name Spoof",
+    description = "Spoof your display name with verified badge",
+    flag = "ZX_NameSpoof",
+    section = "left",
+    callback = function(state)
+        getgenv()._ZX_NameSpoofEnabled = state
+        if state then
+            Library.SendNotification({title = "Name Spoof", text = "Enabled — name: " .. CONFIG.FakeDisplay, duration = 4})
+        else
+            Library.SendNotification({title = "Name Spoof", text = "Disabled", duration = 3})
+        end
+    end,
+})
+nameSpoofMod:create_textbox({
+    title = "Spoofed Name",
+    placeholder = "Enter fake name...",
+    flag = "ZX_SpoofedNameText",
+    callback = function(value)
+        CONFIG.FakeName = value
+        CONFIG.FakeDisplay = value
+        TargetName = value
+        TargetDisplay = value .. CONFIG.Separator .. VERIFIED_BADGE
+        Library.SendNotification({title = "Name Spoof", text = "Name set to: " .. value, duration = 3})
+    end,
+})
 end
 getgenv()._ZX_SetupNameSpoof()
 
@@ -17958,9 +18013,9 @@ getgenv()._ZX_SetupWorldTab = function()
     skyMod:create_slider({title = "Brightness", flag = "ZX_SkyBrightness", minimum_value = 0, maximum_value = 300, value = 150, round_number = true, callback = function(v) Lighting.Brightness = v / 100 end})
     skyMod:create_slider({title = "Time of Day", flag = "ZX_SkyClockTime", minimum_value = 0, maximum_value = 24, value = 12, round_number = true, callback = function(v) Lighting.ClockTime = v end})
 end
-getgenv()._ZX_SetupWorldTab()
+getgenv()._ZX_SetupWorldTab();
 
-do
+(function()
 getgenv().skinChanger = false
 getgenv().swordModel = ""
 getgenv().swordAnimations = ""
@@ -18081,9 +18136,9 @@ task.spawn(function()
         end
     end)
 end)
-end
+end)();
 
-do
+(function()
 getgenv().BallESPEnabled = false
 getgenv().BallTracerEnabled = false
 
@@ -18185,9 +18240,9 @@ getgenv()._ZX_BallTracer = EspTab:create_module({
         end
     end
 })
-end
+end)();
 
-do
+(function()
 getgenv().ShieldChangerEnabled = false
 getgenv().SlashChangerEnabled = false
 getgenv()._ZX_ShieldColors = {"Blue", "Red", "Green", "Yellow", "Purple", "Cyan", "White", "Orange", "Pink"}
@@ -18266,9 +18321,9 @@ task.spawn(function()
         end
     end)
 end)
-end
+end)();
 
-do
+(function()
 getgenv().PullDetection = false
 getgenv()._ZX_PullActive = false
 
@@ -18299,7 +18354,65 @@ getgenv()._ZX_PullDetection = DetectionTab:create_module({
         end
     end
 })
-end
+end)()
 
+AutoFarmTab:create_module({
+    title = "Auto Ranked Queue",
+    flag = "AutoRankedQueue",
+    description = "Automatically queues ranked for you",
+    section = "left",
+    callback = function(state)
+        if state then
+            local args = {"Ranked", "FFA", "Normal", "Auto"}
+            pcall(function()
+                ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("JoinQueue"):FireServer(unpack(args))
+            end)
+        end
+    end
+})
+
+AutoFarmTab:create_module({
+    title = "Auto Casual Queue",
+    flag = "AutoCasualQueue",
+    description = "Automatically queues casual for you",
+    section = "left",
+    callback = function(state)
+        if state then
+            local args = {"Casual", "FFA", "Normal", "Auto"}
+            pcall(function()
+                ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("JoinQueue"):FireServer(unpack(args))
+            end)
+        end
+    end
+})
+
+AutoFarmTab:create_module({
+    title = "Auto Re-Queue",
+    flag = "AutoReQueue",
+    description = "Automatically re-queues after round ends",
+    section = "right",
+    callback = function(state)
+        getgenv().AutoReQueueEnabled = state
+        if state and not getgenv()._ZX_ReQueueConn then
+            local remotes = ReplicatedStorage:WaitForChild("Remotes")
+            local gameEndRemote = remotes:FindFirstChild("GameEnd")
+            if gameEndRemote then
+                getgenv()._ZX_ReQueueConn = gameEndRemote.OnClientEvent:Connect(function()
+                    task.wait(2)
+                    if getgenv().AutoReQueueEnabled then
+                        local args = {"Ranked", "FFA", "Normal", "Auto"}
+                        pcall(function()
+                            ReplicatedStorage.Remotes.JoinQueue:FireServer(unpack(args))
+                        end)
+                    end
+                end)
+            end
+        elseif not state and getgenv()._ZX_ReQueueConn then
+            getgenv()._ZX_ReQueueConn:Disconnect()
+            getgenv()._ZX_ReQueueConn = nil
+        end
+    end
+})
 
 return Library
+end
