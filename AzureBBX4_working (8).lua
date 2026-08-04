@@ -11417,51 +11417,136 @@ if ((1/1)==0) then local _q={} _q[1]=2 end
 
 local auto_rewards_module = MiscTab:create_module({
     title = "Auto Rewards",
-    description = "Auto claim daily rewards, open cases, spin wheel",
+    description = "Auto claim battlepass quests, daily missions, clan quests, playtime rewards",
     flag = "AutoRewards",
     section = "left",
     callback = function(state)
         getgenv().AutoRewardsEnabled = state
         if state then
+            -- Get the sleitnick net folder (the only correct path in modern Blade Ball)
+            local function getNetFolder()
+                local pkg = ReplicatedStorage:FindFirstChild("Packages")
+                local idx = pkg and pkg:FindFirstChild("_Index")
+                local sn = idx and idx:FindFirstChild("sleitnick_net@0.1.0")
+                return sn and sn:FindFirstChild("net")
+            end
+
             local function claim_rewards()
+                local net = getNetFolder()
+                if not net then return end
+
                 pcall(function()
-                    local rf = ReplicatedStorage:FindFirstChild("Remote")
-                    if not rf then return end
-                    if getgenv().AutoRewardsDaily then
-                        local rfn = rf:FindFirstChild("RemoteFunction")
-                        if rfn then
-                            for d = 0, 30 do
-                                pcall(function()
-                                    rfn:InvokeServer("ClaimNewDailyLoginReward", d)
-                                end)
-                            end
+                    -- 1. Battlepass Weekly + Daily quests
+                    if getgenv().AutoRewardsBattlepass then
+                        local rf = net:FindFirstChild("RF/RedeemQuestsType")
+                        if rf then
+                            pcall(function() rf:InvokeServer("Battlepass", "Weekly") end)
+                            pcall(function() rf:InvokeServer("Battlepass", "Daily") end)
                         end
                     end
-                    if getgenv().AutoRewardsCases then
-                        local ren = rf:FindFirstChild("RemoteEvent")
-                        if ren then
-                            pcall(function()
-                                ren:FireServer("OpeningCase", true)
-                            end)
+                end)
+
+                pcall(function()
+                    -- 2. Daily + Weekly missions
+                    if getgenv().AutoRewardsMissions then
+                        local rf = net:FindFirstChild("RF/ClaimAllDailyMissions")
+                        if rf then
+                            pcall(function() rf:InvokeServer("Daily") end)
+                            pcall(function() rf:InvokeServer("Weekly") end)
                         end
                     end
-                    if getgenv().AutoRewardsSpin then
-                        local rfn = rf:FindFirstChild("RemoteFunction")
-                        if rfn then
-                            pcall(function()
-                                rfn:InvokeServer("SpinWheel")
-                            end)
+                end)
+
+                pcall(function()
+                    -- 3. Clan battlepass quests
+                    if getgenv().AutoRewardsClan then
+                        local rf = net:FindFirstChild("RF/ClaimAllClanBPQuests")
+                        if rf then
+                            pcall(function() rf:InvokeServer() end)
                         end
                     end
                 end)
             end
+
+            -- Playtime rewards loop (separate because they're time-gated)
+            -- Allusive logic: claim playtime rewards at 5-minute intervals based on JoinedTimestamp
+            local function claim_playtime_rewards()
+                local net = getNetFolder()
+                if not net then return end
+                local playtimeRF = net:FindFirstChild("RF/ClaimPlaytimeReward")
+                if not playtimeRF then return end
+
+                task.spawn(function()
+                    -- Wait until we can read JoinedTimestamp
+                    local joinTimestamp = nil
+                    for _ = 1, 30 do
+                        pcall(function()
+                            joinTimestamp = tonumber(LocalPlayer:GetAttribute("JoinedTimestamp"))
+                        end)
+                        if joinTimestamp then break end
+                        task.wait(1)
+                        if not getgenv().AutoRewardsEnabled or not getgenv().AutoRewardsPlaytime then return end
+                    end
+                    if not joinTimestamp then return end
+                    joinTimestamp = joinTimestamp + 10 -- small grace period
+
+                    -- 6 playtime milestones, each at i * 300 seconds (5 minutes apart)
+                    for i = 1, 6 do
+                        if not getgenv().AutoRewardsEnabled or not getgenv().AutoRewardsPlaytime then return end
+                        local targetTime = joinTimestamp + (i * 300) + 1
+                        -- Wait until server time reaches the target
+                        while getgenv().AutoRewardsEnabled and getgenv().AutoRewardsPlaytime do
+                            local now = workspace:GetServerTimeNow()
+                            if now >= targetTime then break end
+                            task.wait(1)
+                        end
+                        if not getgenv().AutoRewardsEnabled or not getgenv().AutoRewardsPlaytime then return end
+                        pcall(function()
+                            playtimeRF:InvokeServer(i)
+                        end)
+                    end
+                end)
+            end
+
+            -- Fire immediately
             claim_rewards()
+
+            -- Re-claim on every respawn (server sometimes resets claim state)
             if not System.__properties.__connections.__auto_rewards then
                 System.__properties.__connections.__auto_rewards = LocalPlayer.CharacterAdded:Connect(function()
                     task.wait(2)
-                    claim_rewards()
+                    if getgenv().AutoRewardsEnabled then
+                        claim_rewards()
+                    end
                 end)
             end
+
+            -- Poll every 60s (in case new quests become claimable)
+            if not getgenv()._ZX_RewardsPoll then
+                getgenv()._ZX_RewardsPoll = task.spawn(function()
+                    while getgenv().AutoRewardsEnabled do
+                        task.wait(60)
+                        if getgenv().AutoRewardsEnabled then
+                            claim_rewards()
+                        end
+                    end
+                    getgenv()._ZX_RewardsPoll = nil
+                end)
+            end
+
+            -- Start playtime rewards loop
+            claim_playtime_rewards()
+
+            -- Notify the user
+            pcall(function()
+                if Library and Library.SendNotification then
+                    Library.SendNotification({
+                        title = "Auto Rewards",
+                        text = "Claiming rewards — check your inventory!",
+                        duration = 4
+                    })
+                end
+            end)
         else
             if System.__properties.__connections.__auto_rewards then
                 System.__properties.__connections.__auto_rewards:Disconnect()
@@ -11472,33 +11557,42 @@ local auto_rewards_module = MiscTab:create_module({
 })
 
 auto_rewards_module:create_checkbox({
-    title = "Daily Login Rewards",
-    flag = "AutoRewardsDaily",
+    title = "Battlepass Quests",
+    flag = "AutoRewardsBattlepass",
     callback = function(value)
-        getgenv().AutoRewardsDaily = value
+        getgenv().AutoRewardsBattlepass = value
     end
 })
 
 auto_rewards_module:create_checkbox({
-    title = "Open Cases",
-    flag = "AutoRewardsCases",
+    title = "Daily/Weekly Missions",
+    flag = "AutoRewardsMissions",
     callback = function(value)
-        getgenv().AutoRewardsCases = value
+        getgenv().AutoRewardsMissions = value
     end
 })
 
 auto_rewards_module:create_checkbox({
-    title = "Spin Wheel",
-    flag = "AutoRewardsSpin",
+    title = "Clan BP Quests",
+    flag = "AutoRewardsClan",
     callback = function(value)
-        getgenv().AutoRewardsSpin = value
+        getgenv().AutoRewardsClan = value
+    end
+})
+
+auto_rewards_module:create_checkbox({
+    title = "Playtime Rewards",
+    flag = "AutoRewardsPlaytime",
+    callback = function(value)
+        getgenv().AutoRewardsPlaytime = value
     end
 })
 
 getgenv().AutoRewardsEnabled = false
-getgenv().AutoRewardsDaily = true
-getgenv().AutoRewardsCases = false
-getgenv().AutoRewardsSpin = false
+getgenv().AutoRewardsBattlepass = true
+getgenv().AutoRewardsMissions = true
+getgenv().AutoRewardsClan = true
+getgenv().AutoRewardsPlaytime = true
 
 local GROUP_ID = 12836673
 local MIN_RANK = (9+1)
@@ -12492,14 +12586,121 @@ local Parry_Key = nil
 local PF = nil
 local SC = nil
 
-pcall(function()
-    PF = function()
-        pcall(function()
-            local conns = getconnections(game.Players.LocalPlayer.PlayerGui.Hotbar.Block.Activated)
-            if conns and conns[2] then conns[2]:Fire() end
-        end)
+-- ═════════════════════════════════════════════════════════════════
+-- ANIMATION FIX (GrabParry) — ported from AzureBB_Macro v11
+-- Loads the sword's GrabParry animation locally on the Animator
+-- and replays it on every parry, with bypass-cd when server
+-- confirms ParrySuccess. Wrapped in do...end to keep locals out
+-- of the main function scope (avoids Lua's 200-locals-per-scope cap).
+-- ═════════════════════════════════════════════════════════════════
+do
+local _Anim = {
+    SwordAPI = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("SwordAPI"),
+    lastPlayed = 0,
+    bypassCd = false,
+    delay = 1,
+    cache = {},
+    grabTrack = nil,
+}
+
+local function _GetCharacter() return LocalPlayer.Character end
+local function _GetHumanoid()
+    local char = _GetCharacter()
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+local function _StopAnim(track)
+    pcall(function() track:Stop(track:GetAttribute("StopFadeTime") or 0.1) end)
+end
+local function _PlayGrabAnim(track)
+    pcall(function()
+        track:Play(track:GetAttribute("PlayFadeTime") or 0,
+                   track:GetAttribute("PlayWeight") or 1,
+                   track:GetAttribute("PlaySpeed") or 1)
+    end)
+end
+local function _GetParryAnimation()
+    local char = _GetCharacter()
+    if not char then return nil end
+    local currentSword = char:GetAttribute("CurrentlyEquippedSword")
+    if not currentSword then
+        return _Anim.SwordAPI.Collection.Default:FindFirstChild("GrabParry")
     end
+    if _Anim.cache[currentSword] then return _Anim.cache[currentSword] end
+    local ok, swordData = pcall(function()
+        return ReplicatedStorage.Shared.ReplicatedInstances.Swords.GetSword:Invoke(currentSword)
+    end)
+    if not ok or type(swordData) ~= "table" then
+        _Anim.cache[currentSword] = _Anim.SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+        return _Anim.cache[currentSword]
+    end
+    for _, obj in pairs(_Anim.SwordAPI.Collection:GetChildren()) do
+        if obj.Name == swordData.AnimationType then
+            local anim = obj:FindFirstChild("GrabParry") or obj:FindFirstChild("Grab")
+            if anim then
+                _Anim.cache[currentSword] = anim
+                return anim
+            end
+        end
+    end
+    _Anim.cache[currentSword] = _Anim.SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+    return _Anim.cache[currentSword]
+end
+local function _PlayParryAnim()
+    local humanoid = _GetHumanoid()
+    if not humanoid or not humanoid:FindFirstChild("Animator") then return end
+    local animator = humanoid.Animator
+    local animation = _GetParryAnimation()
+    if not animation then return end
+    pcall(function()
+        for _, track in pairs(animator:GetPlayingAnimationTracks()) do
+            if track.Name == "GrabParry" or track.Name == "Grab" then
+                track.TimePosition = 0
+                _StopAnim(track)
+            elseif track.Name == "SuccessParry" or track.Name == "Success" then
+                _StopAnim(track)
+            end
+        end
+    end)
+    pcall(function()
+        _Anim.grabTrack = animator:LoadAnimation(animation)
+        _Anim.grabTrack.Name = "GrabParry"
+        _PlayGrabAnim(_Anim.grabTrack)
+    end)
+end
+local function _SpamParryAnim()
+    if (os.clock() - _Anim.lastPlayed) >= (_Anim.delay - 0.9) or _Anim.bypassCd then
+        _Anim.lastPlayed = os.clock()
+        _Anim.bypassCd = false
+        _PlayParryAnim()
+    end
+end
+-- When server confirms a parry, set bypass cd so next animation fires immediately
+pcall(function()
+    ReplicatedStorage.Remotes.ParrySuccess.OnClientEvent:Connect(function()
+        _Anim.bypassCd = true
+        local humanoid = _GetHumanoid()
+        if humanoid and humanoid:FindFirstChild("Animator") then
+            pcall(function()
+                for _, track in pairs(humanoid.Animator:GetPlayingAnimationTracks()) do
+                    if track.Name == "GrabParry" or track.Name == "Grab" then
+                        _StopAnim(track)
+                    end
+                end
+            end)
+        end
+    end)
 end)
+
+-- PF now calls the new animation fix (used by Auto Parry / Manual Spam / Auto Spam)
+PF = function()
+    _SpamParryAnim()
+    -- Also fire the Hotbar.Block.Activated conn as a fallback (legacy behavior)
+    pcall(function()
+        local conns = getconnections(game.Players.LocalPlayer.PlayerGui.Hotbar.Block.Activated)
+        if conns and conns[2] then conns[2]:Fire() end
+    end)
+end
+end -- end of animation fix do-block
 
 local remote, f_raw = nil, nil
 local c = {nil, nil, nil, nil, nil, nil, nil}
@@ -18364,11 +18565,21 @@ AutoFarmTab:create_module({
     description = "Automatically queues ranked for you",
     section = "left",
     callback = function(state)
+        getgenv().AutoRankedQueueEnabled = state
         if state then
-            local args = {"Ranked", "FFA", "Normal", "Auto"}
-            pcall(function()
-                ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("JoinQueue"):FireServer(unpack(args))
-            end)
+            if not getgenv()._ZX_RankedQueueConn then
+                getgenv()._ZX_RankedQueueConn = task.spawn(function()
+                    while getgenv().AutoRankedQueueEnabled do
+                        pcall(function()
+                            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("JoinQueue"):FireServer("Ranked", "FFA", "Normal")
+                        end)
+                        task.wait(5)
+                    end
+                end)
+            end
+        else
+            getgenv().AutoRankedQueueEnabled = false
+            getgenv()._ZX_RankedQueueConn = nil
         end
     end
 })
@@ -18379,11 +18590,21 @@ AutoFarmTab:create_module({
     description = "Automatically queues casual for you",
     section = "left",
     callback = function(state)
+        getgenv().AutoCasualQueueEnabled = state
         if state then
-            local args = {"Casual", "FFA", "Normal", "Auto"}
-            pcall(function()
-                ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("JoinQueue"):FireServer(unpack(args))
-            end)
+            if not getgenv()._ZX_CasualQueueConn then
+                getgenv()._ZX_CasualQueueConn = task.spawn(function()
+                    while getgenv().AutoCasualQueueEnabled do
+                        pcall(function()
+                            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("JoinQueue"):FireServer("Casual", "FFA", "Normal")
+                        end)
+                        task.wait(5)
+                    end
+                end)
+            end
+        else
+            getgenv().AutoCasualQueueEnabled = false
+            getgenv()._ZX_CasualQueueConn = nil
         end
     end
 })
@@ -18395,26 +18616,86 @@ AutoFarmTab:create_module({
     section = "right",
     callback = function(state)
         getgenv().AutoReQueueEnabled = state
-        if state and not getgenv()._ZX_ReQueueConn then
+        if state and not getgenv()._ZX_ReQueueLoop then
+            -- Try to find a round-end remote (multiple name candidates)
             local remotes = ReplicatedStorage:WaitForChild("Remotes")
-            local gameEndRemote = remotes:FindFirstChild("GameEnd")
+            local gameEndRemote = nil
+            for _, name in ipairs({"GameEnd", "GameEnded", "RoundEnd", "RoundEnded", "MatchEnd", "MatchEnded", "GameEndedEvent", "RoundOver"}) do
+                local r = remotes:FindFirstChild(name)
+                if r and r:IsA("RemoteEvent") then
+                    gameEndRemote = r
+                    break
+                end
+            end
+
+            -- Event-driven path: listen for round end
             if gameEndRemote then
                 getgenv()._ZX_ReQueueConn = gameEndRemote.OnClientEvent:Connect(function()
                     task.wait(2)
                     if getgenv().AutoReQueueEnabled then
-                        local args = {"Ranked", "FFA", "Normal", "Auto"}
                         pcall(function()
-                            ReplicatedStorage.Remotes.JoinQueue:FireServer(unpack(args))
+                            ReplicatedStorage.Remotes.JoinQueue:FireServer("Ranked", "FFA", "Normal")
                         end)
                     end
                 end)
             end
-        elseif not state and getgenv()._ZX_ReQueueConn then
-            getgenv()._ZX_ReQueueConn:Disconnect()
-            getgenv()._ZX_ReQueueConn = nil
+
+            -- Polling fallback: keep firing JoinQueue every 5s while enabled.
+            -- This guarantees re-queue even if the round-end remote name is wrong
+            -- or the event never fires for the current match type.
+            getgenv()._ZX_ReQueueLoop = task.spawn(function()
+                while getgenv().AutoReQueueEnabled do
+                    -- Only fire if player is alive (we're in lobby/queue, not mid-match)
+                    local char = LocalPlayer.Character
+                    if char and char.PrimaryPart then
+                        -- Check for active balls — only fire JoinQueue if no balls are present
+                        local hasBall = false
+                        pcall(function()
+                            local balls = workspace:FindFirstChild("Balls")
+                            if balls then
+                                for _, b in ipairs(balls:GetChildren()) do
+                                    if b:IsA("BasePart") and b:GetAttribute("realBall") then
+                                        hasBall = true
+                                        break
+                                    end
+                                end
+                            end
+                        end)
+                        if not hasBall then
+                            pcall(function()
+                                ReplicatedStorage.Remotes.JoinQueue:FireServer("Ranked", "FFA", "Normal")
+                            end)
+                        end
+                    end
+                    task.wait(5)
+                end
+            end)
+
+            -- Notify the user which mode is active
+            pcall(function()
+                if Library and Library.SendNotification then
+                    Library.SendNotification({
+                        title = "Auto Re-Queue",
+                        text = gameEndRemote and ("Event mode: " .. gameEndRemote.Name) or "Polling mode (no GameEnd remote found)",
+                        duration = 4
+                    })
+                end
+            end)
+        elseif not state then
+            getgenv().AutoReQueueEnabled = false
+            if getgenv()._ZX_ReQueueConn then
+                pcall(function() getgenv()._ZX_ReQueueConn:Disconnect() end)
+                getgenv()._ZX_ReQueueConn = nil
+            end
+            getgenv()._ZX_ReQueueLoop = nil
         end
     end
 })
+
+-- Cleanup on script unload
+if getgenv()._ZX_ReQueueCleanupConn then
+    pcall(function() getgenv()._ZX_ReQueueCleanupConn:Disconnect() end)
+end
 
 return Library
 end
