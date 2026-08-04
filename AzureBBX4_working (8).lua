@@ -11423,61 +11423,58 @@ local auto_rewards_module = MiscTab:create_module({
     callback = function(state)
         getgenv().AutoRewardsEnabled = state
         if state then
-            -- Get the sleitnick net folder (the only correct path in modern Blade Ball)
+            -- Exact Allusive approach: WaitForChild chain (waits for replication to complete)
             local function getNetFolder()
-                local pkg = ReplicatedStorage:FindFirstChild("Packages")
-                local idx = pkg and pkg:FindFirstChild("_Index")
-                local sn = idx and idx:FindFirstChild("sleitnick_net@0.1.0")
-                return sn and sn:FindFirstChild("net")
+                return ReplicatedStorage:WaitForChild("Packages")
+                    :WaitForChild("_Index")
+                    :WaitForChild("sleitnick_net@0.1.0")
+                    :WaitForChild("net")
             end
 
-            local function claim_rewards()
-                local net = getNetFolder()
-                if not net then return end
-
-                pcall(function()
-                    -- 1. Battlepass Weekly + Daily quests
-                    if getgenv().AutoRewardsBattlepass then
-                        local rf = net:FindFirstChild("RF/RedeemQuestsType")
-                        if rf then
-                            pcall(function() rf:InvokeServer("Battlepass", "Weekly") end)
-                            pcall(function() rf:InvokeServer("Battlepass", "Daily") end)
-                        end
-                    end
-                end)
-
-                pcall(function()
-                    -- 2. Daily + Weekly missions
-                    if getgenv().AutoRewardsMissions then
-                        local rf = net:FindFirstChild("RF/ClaimAllDailyMissions")
-                        if rf then
-                            pcall(function() rf:InvokeServer("Daily") end)
-                            pcall(function() rf:InvokeServer("Weekly") end)
-                        end
-                    end
-                end)
-
-                pcall(function()
-                    -- 3. Clan battlepass quests
-                    if getgenv().AutoRewardsClan then
-                        local rf = net:FindFirstChild("RF/ClaimAllClanBPQuests")
-                        if rf then
-                            pcall(function() rf:InvokeServer() end)
-                        end
-                    end
-                end)
-            end
-
-            -- Playtime rewards loop (separate because they're time-gated)
-            -- Allusive logic: claim playtime rewards at 5-minute intervals based on JoinedTimestamp
-            local function claim_playtime_rewards()
-                local net = getNetFolder()
-                if not net then return end
-                local playtimeRF = net:FindFirstChild("RF/ClaimPlaytimeReward")
-                if not playtimeRF then return end
-
+            -- One-shot claim of all the immediately-available rewards
+            local function claim_now()
                 task.spawn(function()
-                    -- Wait until we can read JoinedTimestamp
+                    local ok, net = pcall(getNetFolder)
+                    if not ok or not net then return end
+
+                    -- Battlepass Daily + Weekly quests
+                    if getgenv().AutoRewardsBattlepass ~= false then
+                        pcall(function()
+                            net["RF/RedeemQuestsType"]:InvokeServer("Battlepass", "Weekly")
+                        end)
+                        pcall(function()
+                            net["RF/RedeemQuestsType"]:InvokeServer("Battlepass", "Daily")
+                        end)
+                    end
+
+                    -- Daily + Weekly missions
+                    if getgenv().AutoRewardsMissions ~= false then
+                        pcall(function()
+                            net["RF/ClaimAllDailyMissions"]:InvokeServer("Daily")
+                        end)
+                        pcall(function()
+                            net["RF/ClaimAllDailyMissions"]:InvokeServer("Weekly")
+                        end)
+                    end
+
+                    -- Clan BP quests
+                    if getgenv().AutoRewardsClan ~= false then
+                        pcall(function()
+                            net["RF/ClaimAllClanBPQuests"]:InvokeServer()
+                        end)
+                    end
+                end)
+            end
+
+            -- Playtime rewards loop (time-gated at 5-min intervals)
+            local function claim_playtime_rewards()
+                task.spawn(function()
+                    local ok, net = pcall(getNetFolder)
+                    if not ok or not net then return end
+                    local playtimeRF = net:FindFirstChild("RF/ClaimPlaytimeReward")
+                    if not playtimeRF then return end
+
+                    -- Read JoinedTimestamp (Allusive uses +10s grace period)
                     local joinTimestamp = nil
                     for _ = 1, 30 do
                         pcall(function()
@@ -11485,22 +11482,24 @@ local auto_rewards_module = MiscTab:create_module({
                         end)
                         if joinTimestamp then break end
                         task.wait(1)
-                        if not getgenv().AutoRewardsEnabled or not getgenv().AutoRewardsPlaytime then return end
+                        if not getgenv().AutoRewardsEnabled then return end
+                        if getgenv().AutoRewardsPlaytime == false then return end
                     end
                     if not joinTimestamp then return end
-                    joinTimestamp = joinTimestamp + 10 -- small grace period
+                    joinTimestamp = joinTimestamp + 10
 
-                    -- 6 playtime milestones, each at i * 300 seconds (5 minutes apart)
+                    -- 6 milestones, each at i * 300 seconds (5 minutes apart)
                     for i = 1, 6 do
-                        if not getgenv().AutoRewardsEnabled or not getgenv().AutoRewardsPlaytime then return end
-                        local targetTime = joinTimestamp + (i * 300) + 1
-                        -- Wait until server time reaches the target
-                        while getgenv().AutoRewardsEnabled and getgenv().AutoRewardsPlaytime do
+                        if not getgenv().AutoRewardsEnabled then return end
+                        if getgenv().AutoRewardsPlaytime == false then return end
+                        -- Wait until server time reaches the target milestone
+                        while getgenv().AutoRewardsEnabled and getgenv().AutoRewardsPlaytime ~= false do
                             local now = workspace:GetServerTimeNow()
-                            if now >= targetTime then break end
+                            if now >= joinTimestamp + (i * 300) + 1 then break end
                             task.wait(1)
                         end
-                        if not getgenv().AutoRewardsEnabled or not getgenv().AutoRewardsPlaytime then return end
+                        if not getgenv().AutoRewardsEnabled then return end
+                        if getgenv().AutoRewardsPlaytime == false then return end
                         pcall(function()
                             playtimeRF:InvokeServer(i)
                         end)
@@ -11509,25 +11508,25 @@ local auto_rewards_module = MiscTab:create_module({
             end
 
             -- Fire immediately
-            claim_rewards()
+            claim_now()
 
-            -- Re-claim on every respawn (server sometimes resets claim state)
+            -- Re-claim on every respawn
             if not System.__properties.__connections.__auto_rewards then
                 System.__properties.__connections.__auto_rewards = LocalPlayer.CharacterAdded:Connect(function()
                     task.wait(2)
                     if getgenv().AutoRewardsEnabled then
-                        claim_rewards()
+                        claim_now()
                     end
                 end)
             end
 
-            -- Poll every 60s (in case new quests become claimable)
+            -- Poll every 60s
             if not getgenv()._ZX_RewardsPoll then
                 getgenv()._ZX_RewardsPoll = task.spawn(function()
                     while getgenv().AutoRewardsEnabled do
                         task.wait(60)
                         if getgenv().AutoRewardsEnabled then
-                            claim_rewards()
+                            claim_now()
                         end
                     end
                     getgenv()._ZX_RewardsPoll = nil
@@ -13457,6 +13456,103 @@ ReplicatedStorage.Packages._Index["sleitnick_net@0.1.0"].net["RE/SlashesOfFuryCa
     end)
 end)
 
+-- ═════════════════════════════════════════════════════════════════
+-- TORNADO DODGE SYSTEM (ported from Arjun script — 8Sj0SH2j)
+-- Watches workspace.Balls.ChildAdded → ball.ChildAdded/ChildRemoved
+-- When "Tornado" or "AeroDynamicSlashVFX" appears under a realBall,
+-- we set __tornado_active = true and pause auto-parry for PAUSE seconds
+-- so the server-side tornado parry check doesn't get triggered and kill us.
+-- Wrapped in do...end to keep locals out of main scope (200-locals cap).
+-- ═════════════════════════════════════════════════════════════════
+getgenv().TornadoDodgeEnabled = true   -- master toggle
+getgenv().TornadoDodgePause = 0.6      -- seconds to pause auto-parry after tornado detected
+
+do
+local _T_LastNotify = 0
+
+local function _T_IsTornadoPart(part)
+    if not part then return false end
+    if part.Name == "Tornado" or part.Name == "AeroDynamicSlashVFX" then
+        return true
+    end
+    return false
+end
+
+local function _T_OnBallChildAdded(child)
+    if not getgenv().TornadoDodgeEnabled then return end
+    if not _T_IsTornadoPart(child) then return end
+    System.__properties.__tornado_active = true
+    System.__properties.__tornado_time = tick()
+    -- Throttled notification (max once per 1.5s)
+    if (tick() - _T_LastNotify) > 1.5 then
+        _T_LastNotify = tick()
+        pcall(function()
+            if Library and Library.SendNotification then
+                Library.SendNotification({
+                    title = "TORNADO!",
+                    text = "Auto-parry paused — waiting...",
+                    duration = 2.5
+                })
+            end
+        end)
+    end
+end
+
+local function _T_OnBallChildRemoved(child)
+    if not _T_IsTornadoPart(child) then return end
+    System.__properties.__tornado_active = false
+    pcall(function()
+        if Library and Library.SendNotification then
+            Library.SendNotification({
+                title = "Tornado Clear",
+                text = "Auto-parry resumed",
+                duration = 1.5
+            })
+        end
+    end)
+end
+
+local function _T_HookBall(ball)
+    if not ball then return end
+    pcall(function() ball.ChildAdded:Connect(_T_OnBallChildAdded) end)
+    pcall(function() ball.ChildRemoved:Connect(_T_OnBallChildRemoved) end)
+    -- If tornado is already there when ball is created, fire immediately
+    pcall(function()
+        for _, child in ipairs(ball:GetChildren()) do
+            _T_OnBallChildAdded(child)
+        end
+    end)
+end
+
+local function _T_HookAllBalls()
+    local balls = workspace:FindFirstChild("Balls")
+    if not balls then return end
+    pcall(function()
+        for _, ball in ipairs(balls:GetChildren()) do
+            if ball:IsA("BasePart") and ball:GetAttribute("realBall") then
+                _T_HookBall(ball)
+            end
+        end
+        -- Also listen for new balls
+        balls.ChildAdded:Connect(function(child)
+            if child and child:IsA("BasePart") and child:GetAttribute("realBall") then
+                _T_HookBall(child)
+            end
+        end)
+    end)
+end
+
+task.spawn(function()
+    -- Wait until workspace.Balls exists
+    local tries = 0
+    while not workspace:FindFirstChild("Balls") and tries < 60 do
+        task.wait(0.5)
+        tries = tries + 1
+    end
+    _T_HookAllBalls()
+end)
+end -- end of Tornado Dodge do-block
+
 -- InfinityCD Detection System (ported from AHHX)
 -- Listens on Ability Duration Fill UIGradient Offset property change.
 -- Sets __plr_forc flag when any ability is active → autoparry skips parry.
@@ -13937,7 +14033,7 @@ function System.autoparry.start()
         System.__properties.__connections.__autoparry:Disconnect()
     end
 if (#"">2) then local _n=math.floor(3.14) end
-    System.__properties.__connections.__autoparry = RunService.Heartbeat:Connect(function()
+    System.__properties.__connections.__autoparry = RunService.PreSimulation:Connect(function()
         if not System.__properties.__autoparry_enabled or not LocalPlayer.Character or
            not LocalPlayer.Character.PrimaryPart then
             System.__properties.__parried = false
@@ -13987,24 +14083,31 @@ if (#"">2) then local _n=math.floor(3.14) end
             end
             local capped_speed_diff = math.min(math.max(speed - 9.5, 0), (2*325))
             local speed_divisor = (2.4 + capped_speed_diff * 0.002) * System.__properties.__divisor_multiplier
-            local parry_accuracy_base = ping_threshold + math.max(speed / speed_divisor, 9.5)
-            local parry_accuracy = parry_accuracy_base * 1.15
+            local parry_accuracy = ping_threshold + math.max(speed / speed_divisor, 9.5)
             local curved = System.detection.is_curved()
+            -- TORNADO DODGE: pause auto-parry for the tornado's actual duration (from server attribute)
+            -- Falls back to TornadoDodgePause (0.6s) if attribute isn't available
             if (type("")=="string") and (ball:FindFirstChild("AeroDynamicSlashVFX")) then
                 ball.AeroDynamicSlashVFX:Destroy()
                 System.__properties.__tornado_time = tick()
                 System.__properties.__tornado_active = true
             end
-            if Runtime:FindFirstChild('Tornado') then
-                if not System.__properties.__tornado_active then
-                    System.__properties.__tornado_time = tick()
-                    System.__properties.__tornado_active = true
+            if System.__properties.__tornado_active then
+                -- Try to read the actual tornado duration from the server
+                local pause = getgenv().TornadoDodgePause or 0.6
+                local runtimeObj = workspace:FindFirstChild("Runtime")
+                if runtimeObj then
+                    local tornadoInstance = runtimeObj:FindFirstChild("Tornado")
+                    if tornadoInstance then
+                        local serverTime = tornadoInstance:GetAttribute("TornadoTime")
+                        if serverTime then
+                            pause = serverTime + 0.314159  -- add small safety buffer like the old code
+                        end
+                    end
                 end
-                if (tick() - System.__properties.__tornado_time) <
-                   (Runtime.Tornado:GetAttribute("TornadoTime") or 1) + 0.314159 then
+                if (tick() - System.__properties.__tornado_time) < pause then
                     continue
                 end
-            else
                 System.__properties.__tornado_active = false
             end
             if one_ball and one_ball:GetAttribute("target") == LocalPlayer.Name and curved then
@@ -14073,7 +14176,6 @@ if (#"">2) then local _n=math.floor(3.14) end
                     local capped_speed_diff = math.min(math.max(speed - 9.5, 0), (721-71))
                     local speed_divisor = (2.4 + capped_speed_diff * 0.002) * System.__properties.__divisor_multiplier
                     local parry_accuracy = ping_threshold + math.max(speed / speed_divisor, 9.5)
-                    parry_accuracy = parry_accuracy * 1.15
                     if ball_target == LocalPlayer.Name and distance <= parry_accuracy and not System.__properties.__training_parried then
                         if getgenv().AutoParryMode == "Keypress" then
                             System.parry.keypress()
