@@ -13130,12 +13130,14 @@ function System.detection.is_curved()
     if speed == 0 then return false end
     local ball_direction = velocity.Unit
     local playerPos = LocalPlayer.Character.PrimaryPart.Position
-    local ballPos = ball.Position
-    local direction = (playerPos - ballPos).Unit
+    local raw_ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    local ping_seconds = raw_ping / 1000
+    local predictedBallPos = ball.Position + (ball.AssemblyLinearVelocity * (0.016 + ping_seconds))
+    local direction = (playerPos - predictedBallPos).Unit
     local dot = direction:Dot(ball_direction)
     local speed_threshold = math.min(speed / 100, 40)
-    local distance = (playerPos - ballPos).Magnitude
-    local reach_time = distance / speed - (ping / 1000)
+    local distance = (playerPos - predictedBallPos).Magnitude
+    local reach_time = distance / speed - ping_seconds
     local ball_distance_threshold = 15 - math.min(distance / 1000, 15) + speed_threshold
     if not System.detection._ZX_PrevVel then System.detection._ZX_PrevVel = {} end
     local Previous_Velocity = System.detection._ZX_PrevVel
@@ -13163,33 +13165,18 @@ function System.detection.is_curved()
     end
     if distance < ball_distance_threshold then return false end
     local adjusted_reach_time = reach_time + 0.03
-    if speed < 300 then
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.2) then return true end
-    elseif speed < 450 then
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.21) then return true end
-    elseif speed < 600 then
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.335) then return true end
-    elseif speed < 1500 then
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
-    else
-        if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
-    end
-    local dot_threshold = (0 - ping / 1000)
+    if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
+    local dot_threshold = (0.5 - ping / 1000)
     local direction_difference = (ball_direction - velocity.Unit)
     local direction_similarity = 0
     if direction_difference.Magnitude > 0 then direction_similarity = direction:Dot(direction_difference.Unit) end
     local dot_difference = dot - direction_similarity
     if dot_difference < dot_threshold then return true end
     local clamped_dot = math.clamp(dot, -1, 1)
-    local radians = math.deg(math.asin(clamped_dot))
+    local radians = math.rad(math.asin(clamped_dot))
     cs.Lerp_Radians = cs.Lerp_Radians + (radians - cs.Lerp_Radians) * 0.8
-    if speed < 300 then
-        if cs.Lerp_Radians < 0.02 and dot < 0 then cs.Last_Warping = tick() end
-        if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.19) then return true end
-    else
-        if cs.Lerp_Radians < 0.018 and dot < 0 then cs.Last_Warping = tick() end
-        if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.5) then return true end
-    end
+    if cs.Lerp_Radians < 0.018 and dot < 0 then cs.Last_Warping = tick() end
+    if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.5) then return true end
     if #Previous_Velocity == 4 then
         for i = 1, 2 do
             local prev_dir = (ball_direction - Previous_Velocity[i].Unit)
@@ -13202,7 +13189,7 @@ function System.detection.is_curved()
     end
     local backwards_curve_detected = false
     local backwards_angle_threshold = 85
-    local horiz_direction = Vector3.new(playerPos.X - ballPos.X, 0, playerPos.Z - ballPos.Z)
+    local horiz_direction = Vector3.new(playerPos.X - predictedBallPos.X, 0, playerPos.Z - predictedBallPos.Z)
     if horiz_direction.Magnitude > 0 then
         horiz_direction = horiz_direction.Unit
         local away_from_player = -horiz_direction
@@ -13752,6 +13739,7 @@ if (#"">2) then local _n=math.floor(3.14) end
     System.__properties.__connections.__autoparry = RunService.Heartbeat:Connect(function()
         if not System.__properties.__autoparry_enabled or not LocalPlayer.Character or
            not LocalPlayer.Character.PrimaryPart then
+            System.__properties.__parried = false
             return
         end
         local balls = System.ball.get_all()
@@ -14614,8 +14602,9 @@ autoparry_module:create_slider({
     value = (69-19),
     round_number = true,
     callback = function(value)
-        if (#{1}==1) and (System and not System.__properties.__humanizer_enabled) then
+        if System then
             System.__properties.__accuracy = value
+            System.__properties.__parried = false
             if update_divisor then pcall(update_divisor) end
         end
     end
