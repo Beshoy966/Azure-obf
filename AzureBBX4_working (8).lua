@@ -13711,7 +13711,10 @@ function System.auto_spam.start()
         local direction = (LocalPlayer.Character.PrimaryPart.Position - ball.Position).Unit
         local ball_direction = zoomies.VectorVelocity.Unit
         local dot = direction:Dot(ball_direction)
-        local distance = LocalPlayer:DistanceFromCharacter(ball.Position)
+        local raw_ping_spam = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+        local ping_seconds_spam = raw_ping_spam / 1000
+        local predictedPosition_spam = ball.Position + (ball.AssemblyLinearVelocity * (0.016 + ping_seconds_spam))
+        local distance = (LocalPlayer.Character.PrimaryPart.Position - predictedPosition_spam).Magnitude
         if not ball_target then return end
         if target_distance > spam_accuracy or distance > spam_accuracy then return end
         local pulsed = LocalPlayer.Character:GetAttribute('Pulsed')
@@ -13746,7 +13749,7 @@ function System.autoparry.start()
         System.__properties.__connections.__autoparry:Disconnect()
     end
 if (#"">2) then local _n=math.floor(3.14) end
-    System.__properties.__connections.__autoparry = RunService.PreSimulation:Connect(function()
+    System.__properties.__connections.__autoparry = RunService.Heartbeat:Connect(function()
         if not System.__properties.__autoparry_enabled or not LocalPlayer.Character or
            not LocalPlayer.Character.PrimaryPart then
             return
@@ -13774,7 +13777,10 @@ if (#"">2) then local _n=math.floor(3.14) end
             if System.__properties.__parried then continue end
             local ball_target = ball:GetAttribute("target")
             local velocity = zoomies.VectorVelocity
-            local distance = (LocalPlayer.Character.PrimaryPart.Position - ball.Position).Magnitude
+            local raw_ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+            local ping_seconds = raw_ping / 1000
+            local predictedPosition = ball.Position + (ball.AssemblyLinearVelocity * (0.016 + ping_seconds))
+            local distance = (LocalPlayer.Character.PrimaryPart.Position - predictedPosition).Magnitude
             local ping = getgenv()._ZX_PingCache / 10
             local ping_threshold = math.clamp(ping / (2*5), 5, (17+0))
             local speed = velocity.Magnitude
@@ -13793,7 +13799,7 @@ if (#"">2) then local _n=math.floor(3.14) end
             local capped_speed_diff = math.min(math.max(speed - 9.5, 0), (2*325))
             local speed_divisor = (2.4 + capped_speed_diff * 0.002) * System.__properties.__divisor_multiplier
             local parry_accuracy_base = ping_threshold + math.max(speed / speed_divisor, 9.5)
-            local parry_accuracy = parry_accuracy_base * 0.85
+            local parry_accuracy = parry_accuracy_base * 1.15
             local curved = System.detection.is_curved()
             if (type("")=="string") and (ball:FindFirstChild("AeroDynamicSlashVFX")) then
                 ball.AeroDynamicSlashVFX:Destroy()
@@ -13868,13 +13874,17 @@ if (#"">2) then local _n=math.floor(3.14) end
                 if (#{1}==1) and (not System.__properties.__training_parried) then
                     local ball_target = training_ball:GetAttribute("target")
                     local velocity = zoomies.VectorVelocity
-                    local distance = LocalPlayer:DistanceFromCharacter(training_ball.Position)
+                    local raw_ping_train = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+                    local ping_seconds_train = raw_ping_train / 1000
+                    local predictedPosition_train = training_ball.Position + (training_ball.AssemblyLinearVelocity * (0.016 + ping_seconds_train))
+                    local distance = (LocalPlayer.Character.PrimaryPart.Position - predictedPosition_train).Magnitude
                     local speed = velocity.Magnitude
                     local ping = getgenv()._ZX_PingCache / 10
                     local ping_threshold = math.clamp(ping / (40-30), 5, bit32.bxor(31,14))
                     local capped_speed_diff = math.min(math.max(speed - 9.5, 0), (721-71))
                     local speed_divisor = (2.4 + capped_speed_diff * 0.002) * System.__properties.__divisor_multiplier
                     local parry_accuracy = ping_threshold + math.max(speed / speed_divisor, 9.5)
+                    parry_accuracy = parry_accuracy * 1.15
                     if ball_target == LocalPlayer.Name and distance <= parry_accuracy and not System.__properties.__training_parried then
                         if getgenv().AutoParryMode == "Keypress" then
                             System.parry.keypress()
@@ -14814,7 +14824,10 @@ local lobby_ap_module = AutoparryTab:create_module({
                     if ball_target ~= LocalPlayer.Name then return end
                     local speed = zoomies.VectorVelocity.Magnitude
                     if speed == 0 then return end
-                    local distance = (LocalPlayer.Character.PrimaryPart.Position - ball.Position).Magnitude
+                    local raw_ping_lobby = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+                    local ping_seconds_lobby = raw_ping_lobby / 1000
+                    local predictedPosition_lobby = ball.Position + (ball.AssemblyLinearVelocity * (0.016 + ping_seconds_lobby))
+                    local distance = (LocalPlayer.Character.PrimaryPart.Position - predictedPosition_lobby).Magnitude
                     local speed_divisor_base = 2.4 + math.min(math.max(speed - 9.5, 0), 650) * 0.002
                     local speed_multiplier = getgenv()._ZX_LobbyAP_SpeedDivisorMultiplier
                     if getgenv().LobbyAPRandomAccuracy then
