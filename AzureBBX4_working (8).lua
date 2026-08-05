@@ -15061,31 +15061,40 @@ autoparry_module:create_checkbox({
                     local sender = getgenv()._ZX_PreClickSender
                     if not sender or sender == "" then return end
                     if getgenv()._ZX_PreClickParried[sender] then return end
-                    local alive = workspace:FindFirstChild("Alive")
-                    if not alive then return end
-                    local ball = alive:FindFirstChild(sender)
-                    if ball then return end
+
+                    -- Get current min speed from slider (was hardcoded 800)
+                    local minSpeed = tonumber(getgenv().AutoPreClickMinSpeed) or 800
+
+                    -- Get current delay from slider (was hardcoded 120-140ms)
+                    local delayMs = tonumber(getgenv().AutoPreClickDelay) or 130
+                    local delayMin = math.max(50, delayMs - 20)
+                    local delayMax = delayMs + 20
+                    local delaySec = math.random(delayMin, delayMax) / 1000
+
                     local speeds = getgenv()._ZX_PreClickSpeeds[sender]
                     if not speeds then return end
+
+                    -- Check if any recorded speed exceeds the min threshold
                     local fastEnough = false
                     for _, s in ipairs(speeds) do
-                        if s >= 800 then
+                        if s >= minSpeed then
                             fastEnough = true
                             break
                         end
                     end
+
                     if fastEnough then
                         getgenv()._ZX_PreClickParried[sender] = true
-                        local delay = math.random(120, 140) / 1000
-                        task.delay(delay, function()
+                        task.delay(delaySec, function()
                             if System and System.parry and System.parry.execute_action then
-                                System.parry.execute_action()
+                                pcall(System.parry.execute_action)
                             end
                             getgenv()._ZX_PreClickParried[sender] = nil
                         end)
+                        -- Clear the recorded speeds AFTER we trigger the parry
+                        -- (was clearing every frame before, which prevented the accumulator from working)
+                        getgenv()._ZX_PreClickSpeeds[sender] = nil
                     end
-                    getgenv()._ZX_PreClickSender = nil
-                    getgenv()._ZX_PreClickSpeeds = {}
                 end)
             end
         else
