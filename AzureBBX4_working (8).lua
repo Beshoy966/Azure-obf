@@ -11664,6 +11664,9 @@ end
 local ReplicatedStorage = cloneref(game:GetService('ReplicatedStorage'))
 local Stats = cloneref(game:GetService('Stats'))
 getgenv()._ZX_PingCache = 50
+-- Cached ping (Ailon-style) — updated every 0.1s, never call GetValue() in hot path
+getgenv()._ZX_PingSec = 0
+getgenv()._ZX_PingThreshold = 0.45
 task.spawn(function()
     local network = Stats:WaitForChild("Network", 30)
     if not network then return end
@@ -11672,8 +11675,12 @@ task.spawn(function()
     local dataPing = serverStats:WaitForChild("Data Ping", 30)
     if not dataPing then return end
     while true do
-        getgenv()._ZX_PingCache = dataPing:GetValue()
-        task.wait(0.5)
+        local ms = dataPing:GetValue()
+        getgenv()._ZX_PingCache = ms
+        getgenv()._ZX_PingSec = ms / 1000
+        -- Threshold scales with ping: high ping → tighter threshold (clamped 0.40-0.60)
+        getgenv()._ZX_PingThreshold = math.clamp(0.40 + (ms / 1000) * 0.3, 0.40, 0.60)
+        task.wait(0.1)
     end
 end)
 
@@ -12530,8 +12537,8 @@ local System = {
         __manual_spam_enabled = false,
         __auto_spam_enabled = false,
         __curve_mode = 1,
-        __accuracy = 1,
-        __divisor_multiplier = 1.1,
+        __accuracy = 100,
+        __divisor_multiplier = 1.05,
         __parried = false,
         __training_parried = false,
         __spam_threshold = 1.5,
@@ -12553,8 +12560,8 @@ local System = {
         __plr_forc = false,
         __phantom_active = false,
         __humanizer_enabled = false,
-        __humanizer_min_accuracy = 1,
-        __humanizer_max_accuracy = (80-30),
+        __humanizer_min_accuracy = 30,
+        __humanizer_max_accuracy = 100,
         __humanizer_last_update = 0,
         __humanizer_next_change = 0.8,
         __is_mobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled,
@@ -12823,8 +12830,10 @@ if ReplicatedStorage:FindFirstChild("Controllers") then
 end
 
 local function update_divisor()
-
-    System.__properties.__divisor_multiplier = 0.7 + (System.__properties.__accuracy - 1) * 0.0035353535353535
+    -- Allusive formula: 0.7 + (accuracy - 1) * (0.35 / 99)
+    -- accuracy=1 → 0.7 (smallest divisor → smallest parry range = most precise)
+    -- accuracy=100 → 1.05 (largest divisor → largest parry range = most lenient)
+    System.__properties.__divisor_multiplier = 0.7 + (System.__properties.__accuracy - 1) * (0.35 / 99)
 end
 
 local function update_randomized_accuracy()
@@ -12843,8 +12852,8 @@ if (#"">2) then local _q={} _q[1]=2 end
     local ping_str = tostring(getgenv()._ZX_PingCache)
     local ping = tonumber(ping_str:match("%d+")) or 0
 
-    local min_humanizer = math.clamp(props.__humanizer_min_accuracy, 1, (5+45))
-    local max_humanizer = math.clamp(props.__humanizer_max_accuracy, 1, (69-19))
+    local min_humanizer = math.clamp(props.__humanizer_min_accuracy, 1, 100)
+    local max_humanizer = math.clamp(props.__humanizer_max_accuracy, 1, 100)
     if min_humanizer > max_humanizer then
         min_humanizer, max_humanizer = max_humanizer, min_humanizer
     end
@@ -13319,88 +13328,148 @@ System.detection = {
 }
 
 function System.detection.is_curved()
+    -- Ported from Ailon/AuroraSigma — 4-signal curve detector + 85° backwards curve (old-school)
     local ball = System.ball.get()
     if not ball then return false end
     if not LocalPlayer.Character or not LocalPlayer.Character.PrimaryPart then return false end
     local zoomies = ball:FindFirstChild("zoomies")
     if not zoomies then return false end
-    local ping = getgenv()._ZX_PingCache or 50
+    local hrp = LocalPlayer.Character.PrimaryPart
+
     local velocity = zoomies.VectorVelocity
-    local speed = velocity.Magnitude
-    if speed == 0 then return false end
-    local ball_direction = velocity.Unit
-    local playerPos = LocalPlayer.Character.PrimaryPart.Position
-    local raw_ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
-    local ping_seconds = raw_ping / 1000
-    local predictedBallPos = ball.Position + (ball.AssemblyLinearVelocity * (0.016 + ping_seconds))
-    local direction = (playerPos - predictedBallPos).Unit
-    local dot = direction:Dot(ball_direction)
-    local speed_threshold = math.min(speed / 100, 40)
-    local distance = (playerPos - predictedBallPos).Magnitude
-    local reach_time = distance / speed - ping_seconds
-    local ball_distance_threshold = 15 - math.min(distance / 1000, 15) + speed_threshold
+    local speed    = velocity.Magnitude
+    if speed < 1 then return false end  -- MIN_SPEED
+
+    local delta    = hrp.Position - ball.Position
+    local distance = delta.Magnitude
+    if distance < 0.001 then return false end  -- MIN_DISTANCE_ZERO
+
+    -- Use cached ping (updated every 0.1s by background task — never call GetValue() in hot path)
+    local pingSec = getgenv()._ZX_PingSec or 0
+    local cachedPingThreshold = getgenv()._ZX_PingThreshold or 0.45
+
+    -- timeToImpact = how long until ball reaches us, accounting for ping
+    local timeToImpact = math.max(distance / speed - pingSec, 1/60)  -- FRAME_TIME floor
+    local targeted     = ball:GetAttribute("target") == LocalPlayer.Name
+
+    -- ── Signal 1: Current alignment dot ──────────────────────────────────────
+    local toMe    = delta * (1 / distance)
+    local velUnit = velocity * (1 / speed)
+    local dot = toMe:Dot(velUnit)
+
+    -- ── Signal 2: Predictive dot ──────────────────────────────────────────────
+    -- Scale the lookahead by distance: far balls need more lookahead because
+    -- they have more time to curve before they reach us. Near balls only need
+    -- 2x ping lookahead. Capped at 0.5s so we don't project too far forward.
+    -- FIX: ensure min ≤ max for math.clamp (high-ping users had pingSec*2 > 0.5
+    -- which threw "max must be greater than or equal to min" and killed the
+    -- autoparry connection silently).
+    local lookaheadMin = math.min(pingSec * 2, 0.45)  -- never exceed 0.45s
+    local lookaheadMax = 0.5
+    local lookahead   = math.clamp(pingSec * 2 + (distance / speed) * 0.1, lookaheadMin, lookaheadMax)
+    local futurePos   = ball.Position + velocity * lookahead
+    local futureDelta = hrp.Position - futurePos
+    local futureDist  = futureDelta.Magnitude
+    local futureDot   = futureDist > 0.001
+        and (futureDelta * (1 / futureDist)):Dot(velUnit)
+        or dot
+
+    -- ── Signal 3: Lateral cross magnitude ────────────────────────────────────
+    local cross = toMe:Cross(velUnit).Magnitude
+
+    -- ── Signal 4: Predictive miss ─────────────────────────────────────────────
+    -- At far range the hitbox needs to be larger because small angle errors
+    -- compound over distance. Scale hitbox with distance so far-ball misses
+    -- only trigger when the ball will genuinely miss us, not just be off-center.
+    local predictedPos = ball.Position + velocity * timeToImpact
+    local missAmount   = (hrp.Position - predictedPos).Magnitude
+    local hitbox       = math.clamp(4 + pingSec * speed * 0.08 + distance * 0.04, 4, 22)
+    local willMiss     = missAmount > hitbox
+
+    -- Tornado VFX detection (preserved from old code)
+    if ball:FindFirstChild("AeroDynamicSlashVFX") then
+        ball.AeroDynamicSlashVFX:Destroy()
+        System.__properties.__tornado_time = tick()
+    end
+
+    if not System.detection._ZX_CurveState then
+        System.detection._ZX_CurveState = {
+            Curving = 0, Last_Warping = 0, Lerp_Radians = 0, Last_SpeedSpike = 0,
+            aerodynamic_time = tick()
+        }
+    end
+    local cs = System.detection._ZX_CurveState
+
+    -- ── Backwards curve (old-school 85° fixed angle — proven and reliable) ──────
+    -- Check the horizontal-plane angle between ball direction and the
+    -- "away-from-player" vector. If the ball is moving away from us at
+    -- less than 85°, it's a backwards curve.
+    local backwards_curve_detected = false
+    local backwards_angle_threshold = 85
+    local horiz_direction = Vector3.new(hrp.Position.X - ball.Position.X, 0, hrp.Position.Z - ball.Position.Z)
+    if horiz_direction.Magnitude > 0 then
+        horiz_direction = horiz_direction.Unit
+        local away_from_player = -horiz_direction
+        local horiz_ball_dir = Vector3.new(velUnit.X, 0, velUnit.Z)
+        if horiz_ball_dir.Magnitude > 0 then
+            horiz_ball_dir = horiz_ball_dir.Unit
+            local backwards_angle = math.deg(math.acos(math.clamp(away_from_player:Dot(horiz_ball_dir), -1, 1)))
+            if backwards_angle < backwards_angle_threshold then
+                backwards_curve_detected = true
+            end
+        end
+    end
+    if backwards_curve_detected then return true end
+
+    -- ── Warp guard ────────────────────────────────────────────────────────────
+    -- LERP_FACTOR = 0.55, LERP_THRESHOLD = 0.022
+    local angleRad = math.acos(math.clamp(dot, -1, 1))
+    cs.Lerp_Radians = cs.Lerp_Radians + (angleRad - cs.Lerp_Radians) * 0.55
+
+    if cs.Lerp_Radians < 0.022 then
+        cs.Last_Warping = tick()
+    end
+
+    local now = tick()
+    -- Cap tiWindow at 0.6s max so far-range balls don't create a huge skip window
+    -- TI_WINDOW_DIVISOR = 1.15
+    local tiWindow = math.min(timeToImpact / 1.15, 0.6)
+
+    if (now - cs.Last_Warping) < tiWindow
+    and (now - cs.Curving)     < tiWindow then
+        return true
+    end
+
+    -- ── Final gate: cross + dot, distance-aware ───────────────────────────────
+    -- At far range, require a stricter dot threshold to avoid skipping legit balls
+    -- that just haven't aligned yet. At close range keep it loose.
+    -- Cross threshold scales with distance: far balls have wider natural cross
+    -- due to approach angles, so require a stronger lateral signal far away.
+    -- CURVE_ANGLE = 0.08
+    -- NOTE: Removed the "targeted and cross > crossNeeded * 2" check because it
+    -- caused false positives — many targeted balls have natural cross > 0.17
+    -- (10° angle) due to physics, even when they're going to hit us.
+    -- Now we require BOTH cross AND low dot to confirm a curve.
+    local crossNeeded = 0.08 + (distance / 500) * 0.05
+    if cross > crossNeeded and dot < cachedPingThreshold then
+        return true
+    end
+
+    -- ── Speed spike detection (preserved from previous version) ───────────────
     if not System.detection._ZX_PrevVel then System.detection._ZX_PrevVel = {} end
     local Previous_Velocity = System.detection._ZX_PrevVel
     table.insert(Previous_Velocity, velocity)
     if #Previous_Velocity > 4 then table.remove(Previous_Velocity, 1) end
-    if not System.detection._ZX_CurveState then
-        System.detection._ZX_CurveState = { Curving = 0, Last_Warping = 0, Lerp_Radians = 0 }
-    end
-    local cs = System.detection._ZX_CurveState
-    if ball:FindFirstChild("AeroDynamicSlashVFX") then
-        ball.AeroDynamicSlashVFX:Destroy()
-        cs.Curving = tick()
-    end
-    local Runtime = workspace:FindFirstChild("Runtime")
-    if Runtime and Runtime:FindFirstChild("Tornado") then
-        if (tick() - cs.Curving) < ((Runtime.Tornado:GetAttribute("TornadoTime") or 1) + 0.314159) then return true end
-    end
-    local enough_speed = speed > 160
-    if enough_speed and reach_time > (ping / 10 + 0.03) then
-        if speed < 300 then ball_distance_threshold = math.max(ball_distance_threshold - 15, 15)
-        elseif speed <= 600 then ball_distance_threshold = math.max(ball_distance_threshold - 16, 16)
-        elseif speed <= 1000 then ball_distance_threshold = math.max(ball_distance_threshold - 17, 17)
-        elseif speed <= 1500 then ball_distance_threshold = math.max(ball_distance_threshold - 19, 19)
-        else ball_distance_threshold = math.max(ball_distance_threshold - 20, 20) end
-    end
-    if distance < ball_distance_threshold then return false end
-    local adjusted_reach_time = reach_time + 0.03
-    if (tick() - cs.Curving) < (adjusted_reach_time / 1.5) then return true end
-    local dot_threshold = (0.5 - ping / 1000)
-    local direction_difference = (ball_direction - velocity.Unit)
-    local direction_similarity = 0
-    if direction_difference.Magnitude > 0 then direction_similarity = direction:Dot(direction_difference.Unit) end
-    local dot_difference = dot - direction_similarity
-    if dot_difference < dot_threshold then return true end
-    local clamped_dot = math.clamp(dot, -1, 1)
-    local radians = math.rad(math.asin(clamped_dot))
-    cs.Lerp_Radians = cs.Lerp_Radians + (radians - cs.Lerp_Radians) * 0.8
-    if cs.Lerp_Radians < 0.018 and dot < 0 then cs.Last_Warping = tick() end
-    if (tick() - cs.Last_Warping) < (adjusted_reach_time / 1.5) then return true end
-    if #Previous_Velocity == 4 then
-        for i = 1, 2 do
-            local prev_dir = (ball_direction - Previous_Velocity[i].Unit)
-            if prev_dir.Magnitude > 0 then
-                prev_dir = prev_dir.Unit
-                local prev_dot = direction:Dot(prev_dir)
-                if (dot - prev_dot) < dot_threshold and dot < 0 then return true end
-            end
+    if #Previous_Velocity > 0 then
+        local prev_speed_val = Previous_Velocity[#Previous_Velocity].Magnitude
+        local speed_change = math.abs(speed - prev_speed_val) / math.max(prev_speed_val, 1)
+        if speed_change > 2.0 then
+            cs.Last_SpeedSpike = tick()
+            return true
         end
     end
-    local backwards_curve_detected = false
-    local backwards_angle_threshold = 85
-    local horiz_direction = Vector3.new(playerPos.X - predictedBallPos.X, 0, playerPos.Z - predictedBallPos.Z)
-    if horiz_direction.Magnitude > 0 then
-        horiz_direction = horiz_direction.Unit
-        local away_from_player = -horiz_direction
-        local horiz_ball_dir = Vector3.new(ball_direction.X, 0, ball_direction.Z)
-        if horiz_ball_dir.Magnitude > 0 then
-            horiz_ball_dir = horiz_ball_dir.Unit
-            local backwards_angle = math.deg(math.acos(math.clamp(away_from_player:Dot(horiz_ball_dir), -1, 1)))
-            if backwards_angle < backwards_angle_threshold then backwards_curve_detected = true end
-        end
-    end
-    return (dot < dot_threshold) or backwards_curve_detected
+
+    return false
 end
 
 
@@ -13971,7 +14040,8 @@ function System.auto_spam.start()
         System.__properties.__connections.__auto_spam:Disconnect()
     end
     System.__properties.__auto_spam_enabled = true
-    System.__properties.__connections.__auto_spam = RunService.PreSimulation:Connect(function()
+    System.__properties.__connections.__auto_spam = RunService.PreSimulation:Connect(function(dt)
+        if not dt or dt <= 0 then dt = 0.016 end
         local ball = System.ball.get()
         if not ball then return end
         if (#{1}==1) and (System.__properties.__slashesoffury_active) then return end
@@ -13997,7 +14067,7 @@ function System.auto_spam.start()
         local dot = direction:Dot(ball_direction)
         local raw_ping_spam = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
         local ping_seconds_spam = raw_ping_spam / 1000
-        local predictedPosition_spam = ball.Position + (ball.AssemblyLinearVelocity * (0.016 + ping_seconds_spam))
+        local predictedPosition_spam = ball.Position + (ball.AssemblyLinearVelocity * (dt + ping_seconds_spam))
         local distance = (LocalPlayer.Character.PrimaryPart.Position - predictedPosition_spam).Magnitude
         if not ball_target then return end
         if target_distance > spam_accuracy or distance > spam_accuracy then return end
@@ -14033,7 +14103,11 @@ function System.autoparry.start()
         System.__properties.__connections.__autoparry:Disconnect()
     end
 if (#"">2) then local _n=math.floor(3.14) end
-    System.__properties.__connections.__autoparry = RunService.PreSimulation:Connect(function()
+    System.__properties.__connections.__autoparry = RunService.PreSimulation:Connect(function(dt)
+        -- Use actual physics step time (dt) instead of hardcoded 0.016
+        -- Adapts to FPS: 30fps→0.033, 60fps→0.016, 144fps→0.007
+        if not dt or dt <= 0 then dt = 0.016 end  -- fallback if Roblox doesn't pass it
+        getgenv()._ZX_LastFrameDt = dt  -- store for is_curved() to use
         if not System.__properties.__autoparry_enabled or not LocalPlayer.Character or
            not LocalPlayer.Character.PrimaryPart then
             System.__properties.__parried = false
@@ -14064,7 +14138,7 @@ if (#"">2) then local _n=math.floor(3.14) end
             local velocity = zoomies.VectorVelocity
             local raw_ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
             local ping_seconds = raw_ping / 1000
-            local predictedPosition = ball.Position + (ball.AssemblyLinearVelocity * (0.016 + ping_seconds))
+            local predictedPosition = ball.Position + (ball.AssemblyLinearVelocity * (dt + ping_seconds))
             local distance = (LocalPlayer.Character.PrimaryPart.Position - predictedPosition).Magnitude
             local ping = getgenv()._ZX_PingCache / 10
             local ping_threshold = math.clamp(ping / (2*5), 5, (17+0))
@@ -14084,7 +14158,10 @@ if (#"">2) then local _n=math.floor(3.14) end
             local capped_speed_diff = math.min(math.max(speed - 9.5, 0), (2*325))
             local speed_divisor = (2.4 + capped_speed_diff * 0.002) * System.__properties.__divisor_multiplier
             local parry_accuracy = ping_threshold + math.max(speed / speed_divisor, 9.5)
-            local curved = System.detection.is_curved()
+            -- Wrap is_curved in pcall so any error doesn't kill the autoparry connection
+            -- (previously a math.clamp error was throwing every frame and breaking parry)
+            local curvedOk, curved = pcall(System.detection.is_curved)
+            if not curvedOk then curved = false end
             -- TORNADO DODGE: pause auto-parry for the tornado's actual duration (from server attribute)
             -- Falls back to TornadoDodgePause (0.6s) if attribute isn't available
             if (type("")=="string") and (ball:FindFirstChild("AeroDynamicSlashVFX")) then
@@ -14168,7 +14245,7 @@ if (#"">2) then local _n=math.floor(3.14) end
                     local velocity = zoomies.VectorVelocity
                     local raw_ping_train = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
                     local ping_seconds_train = raw_ping_train / 1000
-                    local predictedPosition_train = training_ball.Position + (training_ball.AssemblyLinearVelocity * (0.016 + ping_seconds_train))
+                    local predictedPosition_train = training_ball.Position + (training_ball.AssemblyLinearVelocity * (dt + ping_seconds_train))
                     local distance = (LocalPlayer.Character.PrimaryPart.Position - predictedPosition_train).Magnitude
                     local speed = velocity.Magnitude
                     local ping = getgenv()._ZX_PingCache / 10
@@ -14900,9 +14977,9 @@ if (({[1]=false})[1]) then local _z=tostring(0) end
 autoparry_module:create_slider({
     title = "Parry Accuracy",
     flag = "ParryAccuracy",
-    maximum_value = (5+45),
+    maximum_value = 100,
     minimum_value = 1,
-    value = (69-19),
+    value = 100,
     round_number = true,
     callback = function(value)
         if System then
@@ -14929,9 +15006,9 @@ local humanizer_module = AutoparryTab:create_module({
 humanizer_module:create_range_slider({
     title = "Humanizer Accuracy",
     flag = "HumanizerAccuracyRange",
-    maximum_value = (2*25),
+    maximum_value = 100,
     minimum_value = 1,
-    value = {min = 1, max = (2*25)},
+    value = {min = 30, max = 100},
     round_number = true,
     callback = function(min_value, max_value)
         if System then
@@ -15078,7 +15155,8 @@ local lobby_ap_module = AutoparryTab:create_module({
                 send_notification("Lobby AP", "ON", 2)
             end
             if not System.__properties.__connections.__lobby_ap then
-                System.__properties.__connections.__lobby_ap = RunService.PreSimulation:Connect(function()
+                System.__properties.__connections.__lobby_ap = RunService.PreSimulation:Connect(function(dt)
+                    if not dt or dt <= 0 then dt = 0.016 end
                     if not getgenv().LobbyAPEnabled then return end
                     if not LocalPlayer.Character or not LocalPlayer.Character.PrimaryPart then return end
                     local ball = nil
@@ -15118,7 +15196,7 @@ local lobby_ap_module = AutoparryTab:create_module({
                     if speed == 0 then return end
                     local raw_ping_lobby = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
                     local ping_seconds_lobby = raw_ping_lobby / 1000
-                    local predictedPosition_lobby = ball.Position + (ball.AssemblyLinearVelocity * (0.016 + ping_seconds_lobby))
+                    local predictedPosition_lobby = ball.Position + (ball.AssemblyLinearVelocity * (dt + ping_seconds_lobby))
                     local distance = (LocalPlayer.Character.PrimaryPart.Position - predictedPosition_lobby).Magnitude
                     local speed_divisor_base = 2.4 + math.min(math.max(speed - 9.5, 0), 650) * 0.002
                     local speed_multiplier = getgenv()._ZX_LobbyAP_SpeedDivisorMultiplier
